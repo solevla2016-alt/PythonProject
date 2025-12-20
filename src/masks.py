@@ -12,7 +12,7 @@ if __name__ == "__main__":
 
 
 def get_mask_account(account_number: str) -> str:
-    """Реализована функция, которая принимает номер счета и возвращает его маску."""
+    """Реализована функция, которая принимает номер счета и возвращает его маску ."""
     if len(account_number) < 4 or not account_number.isdigit():
         return None
 
