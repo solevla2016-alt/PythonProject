@@ -163,3 +163,80 @@ Python 3.6 или выше;
 
 Лицензия
 Проект распространяется под лицензией MIT.
+Тестовые сценарии (pytest)
+Тесты для src/masks.py
+Файл: tests/test_masks.py
+
+python
+import pytest
+from src.masks import get_mask_card_number, get_mask_account
+
+
+
+@pytest.mark.parametrize("card_number, expected", [
+    ("1234567890123456", "1234 56** **** 3456"),
+    ("123456789012345", None),   # <16 цифр
+    ("abcde", None),            # не цифры
+    ("", None),                 # пустая строка
+    ("1234a67890123456", None), # есть буквы
+])
+def test_get_mask_card_number(card_number, expected):
+    assert get_mask_card_number(card_number) == expected
+
+
+
+
+@pytest.mark.parametrize("account_number, expected", [
+    ("1234567890123456", "**3456"),
+    ("1234", "**34"),
+    ("123", None),              # <4 цифр
+    ("abcdef", None),           # не цифры
+    ("", None),                # пустая строка
+])
+def test_get_mask_account(account_number, expected):
+    assert get_mask_account(account_number) == expected
+Тесты для src/widget.py
+Файл: tests/test_widget.py
+
+python
+import pytest
+from src.widget import mask_account_card, get_date
+
+
+
+@pytest.mark.parametrize("info_str, expected", [
+    ("Visa Platinum 7000792289606361", "7000 79** **** 6361"),
+    ("MasterCard Gold 1234567890123456", "1234 56** **** 3456"),
+    ("Счет 40817810800000000001", "**0001"),
+    ("Debit Card 1234567890123456", "1234 56** **** 3456"),
+    ("Invalid Input", "None"),
+    ("", "None"),  # пустая строка
+])
+def test_mask_account_card(info_str, expected):
+    assert mask_account_card(info_str) == expected
+
+
+
+
+@pytest.mark.parametrize("date_str, expected", [
+    ("2024-03-11T02:26:18.671407", "11.03.2024"),
+    ("2023-12-31T23:59:59.999999", "31.12.2023"),
+])
+def test_get_date_valid(date_str, expected):
+    assert get_date(date_str) == expected
+
+
+
+def test_get_date_invalid():
+    with pytest.raises(ValueError):
+        get_date("invalid-date-format")
+Тесты для src/processing.py
+Файл: tests/test_processing.py
+
+python
+import pytest
+from src.processing import filter_by_state, sort_by_date
+
+# Общие данные для тестов
+data = [
+    {"id": 41428829, "state": "
