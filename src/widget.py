@@ -42,6 +42,6 @@ def get_date(date_str: str) -> str:
 input_date = "2024-03-11T02:26:18.671407"
 output_date = get_date(input_date)
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     print(mask_account_card("Visa Platinum 7000792289606361"))
     print(output_date)

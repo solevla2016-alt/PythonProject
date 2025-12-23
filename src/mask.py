@@ -9,7 +9,7 @@ def get_mask_card_number(card_number: str) -> str:
     return masked
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     print(get_mask_card_number("card"))
 
 
@@ -24,5 +24,5 @@ def get_mask_account(account_number: str) -> str:
     return masked
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     print(get_mask_account("account"))

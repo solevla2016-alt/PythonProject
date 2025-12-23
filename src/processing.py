@@ -10,7 +10,7 @@ def filter_by_state(dict_lists: list, state: str = "EXECUTED") -> list:
     return [dict_list for dict_list in dict_lists if dict_list.get("state") == state]
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     data = [
         {"id": 41428829, "state": "EXECUTED", "date": "2019-07-03T18:35:29.512364"},
         {"id": 939719570, "state": "EXECUTED", "date": "2018-06-30T02:08:58.425572"},
@@ -32,7 +32,7 @@ def sort_by_date(transactions: list, reverse: bool = True) -> list:
     return sorted_transactions
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     data = [
         {"id": 41428829, "state": "EXECUTED", "date": "2019-07-03T18:35:29.512364"},
         {"id": 615064591, "state": "CANCELED", "date": "2018-10-14T08:21:33.419441"},

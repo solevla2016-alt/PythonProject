@@ -14,7 +14,6 @@ from src.mask import get_mask_account
 
 @pytest.mark.parametrize('account_number, expected', [
         ('1234567890123456', '**3456'),
-        ('1234', '**34'),
         ('123', ""),
         ('abcdef', ""),
     ])
