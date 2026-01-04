@@ -4,7 +4,6 @@ def get_mask_card_number(card_number: str) -> str:
 
         return ""
 
-
     masked = f"{card_number[:4]} {card_number[4:6]}** **** {card_number[-4:]}"
     return masked
 
@@ -18,7 +17,6 @@ def get_mask_account(account_number: str) -> str:
     if len(account_number) < 4 or not account_number.isdigit():
 
         return ""
-
 
     masked = f"**{account_number[-4:]}"
     return masked
