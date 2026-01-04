@@ -8,7 +8,11 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.12"
 requests = "^2.32.5"
+pytest-cov = "^7.0.0"
 
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.2"
 
 [build-system]
 requires = ["poetry-core"]
@@ -33,4 +37,19 @@ exclude = [
     "venv/",
     ".venv/",
 ]
+
+
+[tool.coverage.report]
+exclude_also = [
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+    ]
 

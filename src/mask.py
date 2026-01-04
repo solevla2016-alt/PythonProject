@@ -4,12 +4,11 @@ def get_mask_card_number(card_number: str) -> str:
 
         return ""
 
-
     masked = f"{card_number[:4]} {card_number[4:6]}** **** {card_number[-4:]}"
     return masked
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     print(get_mask_card_number("card"))
 
 
@@ -19,10 +18,9 @@ def get_mask_account(account_number: str) -> str:
 
         return ""
 
-
     masked = f"**{account_number[-4:]}"
     return masked
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     print(get_mask_account("account"))
