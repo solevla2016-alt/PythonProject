@@ -1,54 +1,57 @@
 import functools
 from datetime import datetime
-from typing import Callable, Any, Optional
+from typing import Any, Callable, Optional
+
+
+def _get_timestamp() -> str:
+    """Возвращает текущую дату и время в формате YYYY-MM-DD HH:MM:SS."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def log(filename: Optional[str] = None) -> Callable:
-    """Декоратор для логирования начала и конца выполнения функции, а также результатов или возникающих ошибок.
+    """
+    Декоратор для логирования вызова функции (успех/ошибка) в файл или консоль.
 
-    Аргументы:
-        filename (str, optional): Имя файла, в который будут записаны логи. По умолчанию None,
-        что означает вывод в консоль.
-
-           Возможные сценарии использования:
-        - Простое ведение журнала всех вызовов функций.
-        - Анализ поведения программы и диагностика ошибок.
+    Args:
+        filename (str, optional): Путь к файлу для логирования. Если None — вывод в консоль.
+    Returns:
+        Callable: Декоратор, оборачивающий функцию.
     """
 
     def decorator(func: Callable) -> Callable:
-        """Обертка над оригинальной функцией."""
-
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            """Основная логика выполнения декорированной функции с обработкой логов."""
+            """Обёртка, добавляющая логирование вызова функции."""
             try:
-                # Выполняем оригинальную функцию и получаем результат
                 result = func(*args, **kwargs)
+                message = f"{func.__name__} ok"
 
-                # Создаем сообщение о результате
-                message = f"{func.__name__}: {result}"
-
-                # Записываем лог в файл или выводим в консоль
                 if filename:
                     with open(filename, mode="a", encoding="utf-8") as file:
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        file.write(f"[{timestamp}] {message}\n")
+                        file.write(f"[{_get_timestamp()}] {message}\n")
                 else:
                     print(message)
 
                 return result
 
+            except (KeyboardInterrupt, SystemExit):
+                raise
             except Exception as e:
-                # Сообщение об ошибке с указанием имени функции, типа ошибки и входных параметров
-                err_message = f"{func.__name__}: error: {type(e).__name__}. Inputs: {args}, {kwargs}"
+                err_message = (
+                    f"{func.__name__}: error: {type(e).__name__}. "
+                    f"Inputs: {args}, {kwargs}"
+                )
 
-                # Записываем ошибку в файл или выводим в консоль
                 if filename:
-                    with open(filename, mode="a", encoding="utf-8") as file:
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        file.write(f"[{timestamp}] {err_message}\n")
+                    try:
+                        with open(filename, mode="a", encoding="utf-8") as file:
+                            file.write(f"[{_get_timestamp()}] {err_message}\n")
+                    except OSError as log_error:
+                        print(f"Log write error: {log_error}")
                 else:
                     print(err_message)
+
+                raise e
 
         return wrapper
 
