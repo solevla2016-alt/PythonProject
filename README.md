@@ -292,6 +292,12 @@ class TestLogDecorator:
         assert "Inputs: (), {}" in content
 
 
+Скопируйте .env.example в .env:
+
+bash
+cp .env.example .env
+Заполните .env своими реальными ключами и настройками.
+
 import json
 import os
 from typing import Any, Dict, List
@@ -299,232 +305,310 @@ from typing import Any, Dict, List
 
 def load_transactions(file_path: str) -> List[Dict[str, Any]]:
     """
-    Функция загружает список словарей с информацией о финансовых операциях из JSON-файла.
+    Загружает список словарей с данными о финансовых транзакциях из JSON‑файла.
 
     """
     try:
-        # Проверяем наличие файла
         if not os.path.exists(file_path):
+            print(f"[DEBUG] Файл не найден: {file_path}")
             return []
 
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+            print(f"[DEBUG] Загружено из файла: {data}")
 
         if isinstance(data, list):
             return data
         else:
+            print(f"[DEBUG] Данные не являются списком (тип: {type(data)})")
             return []
+
+    except FileNotFoundError:
+        print(f"[DEBUG] FileNotFoundError: файл не найден — {file_path}")
+        return []
+
+    except PermissionError:
+        print(f"[DEBUG] PermissionError: нет доступа к файлу — {file_path}")
+        return []
+
+    except json.JSONDecodeError as e:
+        print(f"[DEBUG] JSONDecodeError: ошибка парсинга JSON — {e}")
+        return []
+
+    except UnicodeDecodeError as e:
+        print(f"[DEBUG] UnicodeDecodeError: ошибка кодировки файла — {e}")
+        return []
+
     except Exception as e:
-        print(f"Ошибка загрузки данных: {e}")
+        print(f"[DEBUG] Неожиданная ошибка: {type(e).__name__}: {e}")
         return []
 
 import unittest
+import json
 from unittest.mock import mock_open, patch
 from src.utils import load_transactions
-from unittest import TestCase
+
 
 
 class TestLoadTransactions(unittest.TestCase):
+
+    @patch("os.path.exists", return_value=True)
     @patch("builtins.open", new_callable=mock_open, read_data="[]")
-    def test_load_valid_json_list(self, mock_file):
-        result = load_transactions('valid_file.json')
+    def test_valid_empty_list(self, mock_open_func, mock_exists):
+        """Тест: корректный пустой JSON-список."""
+        result = load_transactions("test.json")
+        self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open, read_data='[{"id": 1, "amount": 100}]')
+    def test_valid_list_of_dicts(self, mock_open_func, mock_exists):
+        """Тест: корректный JSON со списком словарей."""
+        result = load_transactions("test.json")
+        expected = [{"id": 1, "amount": 100}]
+        self.assertEqual(result, expected)
+        mock_open_func.assert_called_once()
+
+    @patch("os.path.exists", return_value=False)
+    def test_file_not_found(self, mock_exists):
+        """Тест: файл не существует."""
+        result = load_transactions("missing.json")
         self.assertEqual(result, [])
 
-    @patch("builtins.open", side_effect=FileNotFoundError())
-    def test_file_not_found(self, mock_file):
-        result = load_transactions('missing_file.json')
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", side_effect=json.JSONDecodeError("Expecting value", "", 0))
+    def test_invalid_json_format(self, mock_open_func, mock_exists):
+        """Тест: некорректный JSON (ошибка декодирования)."""
+        result = load_transactions("bad.json")
         self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
 
-    @patch("builtins.open", new_callable=mock_open, read_data='{"invalid": "format"}')
-    def test_invalid_json_format(self, mock_file):
-        result = load_transactions('bad_format.json')
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open, read_data="")
+    def test_empty_file(self, mock_open_func, mock_exists):
+        """Тест: пустой файл (не JSON)."""
+        result = load_transactions("empty.json")
         self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
 
-    @patch("builtins.open", new_callable=mock_open, read_data='')
-    def test_empty_file(self, mock_file):
-        result = load_transactions('empty_file.json')
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open, read_data='{"not": "a list"}')
+    def test_json_not_a_list(self, mock_open_func, mock_exists):
+        """Тест: JSON — не список (например, словарь)."""
+        result = load_transactions("not_list.json")
         self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
 
-
-
-    class TestLoadTransactions(TestCase):
-
-        @patch("os.path.exists", return_value=True)  # Замокаем проверку существования файла
-        @patch("builtins.open", new_callable=mock_open, read_data='["item"]')
-        def test_single_item_in_list(self, mock_open_func, mock_exists):
-            result = load_transactions('single_item.json')
-
-            # Проверяем, что open был вызван
-            mock_open_func.assert_called_once()
-
-            # Проверяем результат
-            self.assertEqual(result, ["item"])
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", side_effect=PermissionError("Access denied"))
+    def test_permission_error(self, mock_open_func, mock_exists):
+        """Тест: ошибка прав доступа к файлу."""
+        result = load_transactions("forbidden.json")
+        self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
 
 import os
+from functools import lru_cache
+from typing import Any, Dict
+
 import requests
-from typing import Dict, Union
 from dotenv import load_dotenv
 
-# 1. Загружаем .env из корневой директории
-dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-load_dotenv(dotenv_path)
+load_dotenv()
 
-# 2. Отладка: проверяем загрузку ключа
-print("→ Проверка окружения:")
-api_key = os.getenv("API_KEY")
-if api_key:
-    print(f"  API_KEY загружен (длина: {len(api_key)})")
-    print(f"  Пример: {api_key[:4]}...{api_key[-4:]}")
-else:
-    print("  ERROR: API_KEY не найден в .env!")
+# Получение и проверка API_KEY
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    raise ValueError("API_KEY не найден в .env. Создайте файл .env с API_KEY=ваш_ключ.")
 
-print("-" * 40)
+
+BASE_URL = "https://api.apilayer.com/exchangerates_data/convert"
+
+
+@lru_cache(maxsize=128)
+def _get_exchange_rate(from_currency: str, to_currency: str) -> float:
+    """Получает курс конвертации с кешированием."""
+    params = {"from": from_currency, "to": to_currency, "amount": str(1)}
+    headers = {"apikey": API_KEY}
+
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                BASE_URL, params=params, headers=headers, timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if isinstance(data, dict) and "error" in data:
+                error_info = data["error"].get("info", "Неизвестная ошибка")
+                raise Exception(f"API ошибка: {error_info}")
+            elif not isinstance(data, dict):
+                raise Exception("Неверный формат ответа API")
+
+            return float(data["result"])
+
+        except requests.exceptions.RequestException as e:
+            if attempt == 1:
+                raise Exception(f"Ошибка запроса к API после 2 попыток: {e}")
+            continue
+
+    raise Exception("Не удалось получить курс конвертации после 2 попыток")
 
 
 def convert_to_rubles(amount: float, currency: str) -> float:
     """Конвертирует сумму из валюты в RUB через APILayer."""
-    api_key = os.getenv("API_KEY")
-
-    if not api_key:
-        raise ValueError("API_KEY не найден в .env. Убедитесь, что файл .env существует и содержит API_KEY.")
-
-    url = "https://api.apilayer.com/exchangerates_data/convert"
-
-
-    params: Dict[str, str] = {
-        "from": str(currency),
-        "to": "RUB",
-        "amount": str(float(amount))
-    }
-    headers: Dict[str, str] = {"apikey": api_key}
-
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-
-        if not data.get("success"):
-            err_info = data.get("error", {}).get("info", "Неизвестная ошибка")
-            raise Exception(f"API ошибка: {err_info}")
-
-        converted_amount = float(data["result"])
-        return round(converted_amount, 2)
-
+        rate = _get_exchange_rate(currency, "RUB")
+        converted = amount * rate
+        return round(converted, 2)
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Сеть/запрос ошибка: {e}")
+        raise RuntimeError(f"Сетевой сбой при запросе курса {currency}→RUB: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Ошибка получения курса {currency}→RUB: {e}") from e
 
 
-def process_transaction(transaction: Dict[str, Union[float, str]]) -> float:
+def process_transaction(transaction: Dict[str, Any]) -> float:
     """Обрабатывает транзакцию и возвращает сумму в рублях."""
 
-    amount_value = transaction["amount"]
+    # Проверка наличия обязательных ключей
+    if "operationAmount" not in transaction:
+        raise KeyError("Поле 'operationAmount' отсутствует в транзакции.")
+
+    if "amount" not in transaction["operationAmount"]:
+        raise KeyError("Поле 'operationAmount.amount' отсутствует в транзакции.")
+    if "currency" not in transaction["operationAmount"]:
+        raise KeyError("Поле 'operationAmount.currency' отсутствует в транзакции.")
+    if "code" not in transaction["operationAmount"]["currency"]:
+        raise KeyError("Поле 'operationAmount.currency.code' отсутствует в транзакции.")
+
+    # Извлечение данных
+    amount_value = transaction["operationAmount"]["amount"]
+    currency_code = transaction["operationAmount"]["currency"]["code"]
+
+    # Валидация amount
     if isinstance(amount_value, (int, float)):
         amount = float(amount_value)
     elif isinstance(amount_value, str):
+        amount_str = amount_value.strip()
+        if not amount_str:
+            raise ValueError(
+                "Поле 'operationAmount.amount' не может быть пустой строкой."
+            )
         try:
-            amount = float(amount_value)
+            amount = float(amount_str)
         except ValueError:
-            raise ValueError(f"amount должен быть числом, получено: {amount_value}")
+            raise ValueError(
+                f"Поле 'operationAmount.amount' должно быть числом, получено: {amount_value}"
+            )
     else:
-        raise TypeError(f"amount должен быть числом или строкой, получено: {type(amount_value)}")
-
-
-    currency_value = transaction["currency"]
-    if not isinstance(currency_value, str):
         raise TypeError(
-            f"currency должно быть строкой, получено: {type(currency_value)}"
+            f"Поле 'operationAmount.amount' должно быть числом или строкой, получено: {type(amount_value).__name__}"
         )
-    currency = currency_value.upper().strip()
 
-    if currency == "RUB":
-        return amount
-
-    if currency not in ("USD", "EUR"):
+    if amount < 0:
         raise ValueError(
-            f"Валюта {currency} не поддерживается. Используйте USD, EUR, RUB."
+            f"Поле 'operationAmount.amount' не может быть отрицательным: {amount}"
+        )
+
+    # Валидация currency.code
+    if not isinstance(currency_code, str):
+        raise TypeError(
+            f"Поле 'operationAmount.currency.code' должно быть строкой, получено: {type(currency_code).__name__}"
+        )
+
+    currency = currency_code.strip().upper()
+    if not currency:
+        raise ValueError(
+            "Поле 'operationAmount.currency.code' не может быть пустой строкой."
+        )
+
+    SUPPORTED_CURRENCIES = {"RUB", "USD", "EUR"}
+    if currency not in SUPPORTED_CURRENCIES:
+        raise ValueError(
+            f"Валюта {currency} не поддерживается. Используйте: {SUPPORTED_CURRENCIES}."
         )
 
     return convert_to_rubles(amount, currency)
 
-
-import requests  # Добавлен импорт модуля requests
 import unittest
 from unittest.mock import patch, MagicMock
-from src.external_api import convert_to_rubles, process_transaction
+from src.external_api import (
+    _get_exchange_rate,
+    convert_to_rubles,
+    process_transaction
+)
 
 
+class TestCurrencyConversion(unittest.TestCase):
 
-class TestExternalApi(unittest.TestCase):
-
-    @patch('src.external_api.requests.get')
-    def test_convert_usd_to_rub(self, mock_get):
+    @patch('requests.get')
+    def test_get_exchange_rate_success(self, mock_requests_get):
         mock_response = MagicMock()
-        # ИМИТИРУЕМ РЕАЛЬНЫЙ ОТВЕТ API: уже умноженная сумма!
-        mock_response.json.return_value = {"success": True, "result": 7500.0}  # 100 × 75.0
         mock_response.status_code = 200
-        mock_get.return_value = mock_response
+        mock_response.json.return_value = {'result': 65.5}
 
-        result = convert_to_rubles(100, "USD")
-        print(f"DEBUG: result = {result}")  # Теперь будет 7500.0
-        self.assertEqual(result, 7500.0)  # Тест пройдёт!
+        mock_requests_get.return_value = mock_response
 
-    @patch('src.external_api.os.getenv')
-    def test_missing_api_key(self, mock_env):
-        # Имитация отсутствия API-ключа
-        mock_env.return_value = None
-        with self.assertRaises(ValueError):
-            convert_to_rubles(100, "USD")
+        result = _get_exchange_rate('USD', 'RUB')
+        self.assertEqual(result, 65.5)
 
-    @patch('src.external_api.requests.get')
-    def test_failed_request(self, mock_get):
-        # Ошибка при обращении к API
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.json.return_value = {"success": False, "error": {"info": "Invalid API key"}}
-        mock_get.return_value = mock_response
+    @patch('src.external_api._get_exchange_rate')  # было: 'main._get_exchange_rate'
+    def test_convert_to_rubles(self, mock_getexchange_rate):
+        mock_getexchange_rate.return_value = 65.5
+        result = convert_to_rubles(100, 'USD')
+        self.assertAlmostEqual(result, 6550.0, places=2)
 
-        with self.assertRaises(Exception):
-            convert_to_rubles(100, "USD")
+    def test_process_transaction_valid_input(self):
+        valid_transaction = {
+            "operationAmount": {
+                "amount": "100",
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
+        with patch('src.external_api.convert_to_rubles') as mock_convert:  # было: 'main.convert_to_rubles'
+            mock_convert.return_value = 6550.0
+            result = process_transaction(valid_transaction)
+            self.assertEqual(result, 6550.0)
 
-    @patch('src.external_api.requests.get')
-    def test_network_error(self, mock_get):
-        # Мок-объект для симуляции сетевой ошибки
-        mock_get.side_effect = requests.exceptions.RequestException("Network error")
-        with self.assertRaises(Exception):
-            convert_to_rubles(100, "USD")
+    def test_process_transaction_missing_operation_amount(self):
+        invalid_transaction = {}
+        with self.assertRaises(KeyError):
+            process_transaction(invalid_transaction)
 
-    @patch('src.external_api.convert_to_rubles')
-    def test_process_transaction_in_rub(self, mock_convert):
-        # Когда валюта изначально в рублях, конвертация не должна происходить
-        transaction = {"amount": 1000, "currency": "RUB"}
-        result = process_transaction(transaction)
-        self.assertEqual(result, 1000.0)
-        mock_convert.assert_not_called()
-
-    @patch('src.external_api.convert_to_rubles')
-    def test_process_transaction_usd(self, mock_convert):
-        # Операция с долларом вызывает конверсию
-        mock_convert.return_value = 7500.0
-        transaction = {"amount": 100, "currency": "USD"}
-        result = process_transaction(transaction)
-        self.assertEqual(result, 7500.0)
-        mock_convert.assert_called_once_with(100, "USD")
-
-    def test_invalid_currency(self):
-        # Неправильная валюта вызывает ошибку
-        transaction = {"amount": 100, "currency": "GBP"}
-        with self.assertRaises(ValueError):
-            process_transaction(transaction)
-
-    def test_non_string_currency(self):
-        # Неверный тип валюты тоже приведёт к исключению
-        transaction = {"amount": 100, "currency": 123}
+    def test_process_transaction_invalid_amount_type(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": {},
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
         with self.assertRaises(TypeError):
-            process_transaction(transaction)
+            process_transaction(invalid_transaction)
 
+    def test_process_transaction_negative_amount(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": "-100",
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
+        with self.assertRaises(ValueError):
+            process_transaction(invalid_transaction)
 
-Скопируйте .env.example в .env:
-
-bash
-cp .env.example .env
-Заполните .env своими реальными ключами и настройками.
+    def test_process_transaction_unsupported_currency(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": "100",
+                "currency": {
+                    "code": "GBP"
+                }
+            }
+        }
+        with self.assertRaises(ValueError):
+            process_transaction(invalid_transaction)

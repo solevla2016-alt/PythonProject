@@ -1,74 +1,86 @@
-import requests  # Добавлен импорт модуля requests
 import unittest
 from unittest.mock import patch, MagicMock
-from src.external_api import convert_to_rubles, process_transaction
+from src.external_api import (
+    _get_exchange_rate,
+    convert_to_rubles,
+    process_transaction
+)
 
 
+class TestCurrencyConversion(unittest.TestCase):
 
-class TestExternalApi(unittest.TestCase):
-
-    @patch('src.external_api.requests.get')
-    def test_convert_usd_to_rub(self, mock_get):
+    @patch('requests.get')
+    def test_get_exchange_rate_success(self, mock_requests_get):
         mock_response = MagicMock()
-        # ИМИТИРУЕМ РЕАЛЬНЫЙ ОТВЕТ API: уже умноженная сумма!
-        mock_response.json.return_value = {"success": True, "result": 7500.0}  # 100 × 75.0
         mock_response.status_code = 200
-        mock_get.return_value = mock_response
+        mock_response.json.return_value = {'result': 65.5}
 
-        result = convert_to_rubles(100, "USD")
-        print(f"DEBUG: result = {result}")  # Теперь будет 7500.0
-        self.assertEqual(result, 7500.0)  # Тест пройдёт!
+        mock_requests_get.return_value = mock_response
 
-    @patch('src.external_api.os.getenv')
-    def test_missing_api_key(self, mock_env):
-        # Имитация отсутствия API-ключа
-        mock_env.return_value = None
-        with self.assertRaises(ValueError):
-            convert_to_rubles(100, "USD")
+        result = _get_exchange_rate('USD', 'RUB')
+        self.assertEqual(result, 65.5)
 
-    @patch('src.external_api.requests.get')
-    def test_failed_request(self, mock_get):
-        # Ошибка при обращении к API
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.json.return_value = {"success": False, "error": {"info": "Invalid API key"}}
-        mock_get.return_value = mock_response
+    @patch('src.external_api._get_exchange_rate')  # было: 'main._get_exchange_rate'
+    def test_convert_to_rubles(self, mock_getexchange_rate):
+        mock_getexchange_rate.return_value = 65.5
+        result = convert_to_rubles(100, 'USD')
+        self.assertAlmostEqual(result, 6550.0, places=2)
 
-        with self.assertRaises(Exception):
-            convert_to_rubles(100, "USD")
+    def test_process_transaction_valid_input(self):
+        valid_transaction = {
+            "operationAmount": {
+                "amount": "100",
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
+        with patch('src.external_api.convert_to_rubles') as mock_convert:  # было: 'main.convert_to_rubles'
+            mock_convert.return_value = 6550.0
+            result = process_transaction(valid_transaction)
+            self.assertEqual(result, 6550.0)
 
-    @patch('src.external_api.requests.get')
-    def test_network_error(self, mock_get):
-        # Мок-объект для симуляции сетевой ошибки
-        mock_get.side_effect = requests.exceptions.RequestException("Network error")
-        with self.assertRaises(Exception):
-            convert_to_rubles(100, "USD")
+    def test_process_transaction_missing_operation_amount(self):
+        invalid_transaction = {}
+        with self.assertRaises(KeyError):
+            process_transaction(invalid_transaction)
 
-    @patch('src.external_api.convert_to_rubles')
-    def test_process_transaction_in_rub(self, mock_convert):
-        # Когда валюта изначально в рублях, конвертация не должна происходить
-        transaction = {"amount": 1000, "currency": "RUB"}
-        result = process_transaction(transaction)
-        self.assertEqual(result, 1000.0)
-        mock_convert.assert_not_called()
-
-    @patch('src.external_api.convert_to_rubles')
-    def test_process_transaction_usd(self, mock_convert):
-        # Операция с долларом вызывает конверсию
-        mock_convert.return_value = 7500.0
-        transaction = {"amount": 100, "currency": "USD"}
-        result = process_transaction(transaction)
-        self.assertEqual(result, 7500.0)
-        mock_convert.assert_called_once_with(100, "USD")
-
-    def test_invalid_currency(self):
-        # Неправильная валюта вызывает ошибку
-        transaction = {"amount": 100, "currency": "GBP"}
-        with self.assertRaises(ValueError):
-            process_transaction(transaction)
-
-    def test_non_string_currency(self):
-        # Неверный тип валюты тоже приведёт к исключению
-        transaction = {"amount": 100, "currency": 123}
+    def test_process_transaction_invalid_amount_type(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": {},
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
         with self.assertRaises(TypeError):
-            process_transaction(transaction)
+            process_transaction(invalid_transaction)
+
+    def test_process_transaction_negative_amount(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": "-100",
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
+        with self.assertRaises(ValueError):
+            process_transaction(invalid_transaction)
+
+    def test_process_transaction_unsupported_currency(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": "100",
+                "currency": {
+                    "code": "GBP"
+                }
+            }
+        }
+        with self.assertRaises(ValueError):
+            process_transaction(invalid_transaction)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,85 +1,122 @@
 import os
+from functools import lru_cache
+from typing import Any, Dict
+
 import requests
-from typing import Dict, Union
 from dotenv import load_dotenv
 
-# 1. Загружаем .env из корневой директории
-dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-load_dotenv(dotenv_path)
+load_dotenv()
 
-# 2. Отладка: проверяем загрузку ключа
-print("→ Проверка окружения:")
-api_key = os.getenv("API_KEY")
-if api_key:
-    print(f"  API_KEY загружен (длина: {len(api_key)})")
-    print(f"  Пример: {api_key[:4]}...{api_key[-4:]}")
-else:
-    print("  ERROR: API_KEY не найден в .env!")
+# Получение и проверка API_KEY
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    raise ValueError("API_KEY не найден в .env. Создайте файл .env с API_KEY=ваш_ключ.")
 
-print("-" * 40)
+
+BASE_URL = "https://api.apilayer.com/exchangerates_data/convert"
+
+
+@lru_cache(maxsize=128)
+def _get_exchange_rate(from_currency: str, to_currency: str) -> float:
+    """Получает курс конвертации с кешированием."""
+    params = {"from": from_currency, "to": to_currency, "amount": str(1)}
+    headers = {"apikey": API_KEY}
+
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                BASE_URL, params=params, headers=headers, timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if isinstance(data, dict) and "error" in data:
+                error_info = data["error"].get("info", "Неизвестная ошибка")
+                raise Exception(f"API ошибка: {error_info}")
+            elif not isinstance(data, dict):
+                raise Exception("Неверный формат ответа API")
+
+            return float(data["result"])
+
+        except requests.exceptions.RequestException as e:
+            if attempt == 1:
+                raise Exception(f"Ошибка запроса к API после 2 попыток: {e}")
+            continue
+
+    raise Exception("Не удалось получить курс конвертации после 2 попыток")
 
 
 def convert_to_rubles(amount: float, currency: str) -> float:
     """Конвертирует сумму из валюты в RUB через APILayer."""
-    api_key = os.getenv("API_KEY")
-
-    if not api_key:
-        raise ValueError("API_KEY не найден в .env. Убедитесь, что файл .env существует и содержит API_KEY.")
-
-    url = "https://api.apilayer.com/exchangerates_data/convert"
-
-
-    params: Dict[str, str] = {
-        "from": str(currency),
-        "to": "RUB",
-        "amount": str(float(amount))
-    }
-    headers: Dict[str, str] = {"apikey": api_key}
-
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-
-        if not data.get("success"):
-            err_info = data.get("error", {}).get("info", "Неизвестная ошибка")
-            raise Exception(f"API ошибка: {err_info}")
-
-        converted_amount = float(data["result"])
-        return round(converted_amount, 2)
-
+        rate = _get_exchange_rate(currency, "RUB")
+        converted = amount * rate
+        return round(converted, 2)
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Сеть/запрос ошибка: {e}")
+        raise RuntimeError(f"Сетевой сбой при запросе курса {currency}→RUB: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Ошибка получения курса {currency}→RUB: {e}") from e
 
 
-def process_transaction(transaction: Dict[str, Union[float, str]]) -> float:
+def process_transaction(transaction: Dict[str, Any]) -> float:
     """Обрабатывает транзакцию и возвращает сумму в рублях."""
 
-    amount_value = transaction["amount"]
+    # Проверка наличия обязательных ключей
+    if "operationAmount" not in transaction:
+        raise KeyError("Поле 'operationAmount' отсутствует в транзакции.")
+
+    if "amount" not in transaction["operationAmount"]:
+        raise KeyError("Поле 'operationAmount.amount' отсутствует в транзакции.")
+    if "currency" not in transaction["operationAmount"]:
+        raise KeyError("Поле 'operationAmount.currency' отсутствует в транзакции.")
+    if "code" not in transaction["operationAmount"]["currency"]:
+        raise KeyError("Поле 'operationAmount.currency.code' отсутствует в транзакции.")
+
+    # Извлечение данных
+    amount_value = transaction["operationAmount"]["amount"]
+    currency_code = transaction["operationAmount"]["currency"]["code"]
+
+    # Валидация amount
     if isinstance(amount_value, (int, float)):
         amount = float(amount_value)
     elif isinstance(amount_value, str):
+        amount_str = amount_value.strip()
+        if not amount_str:
+            raise ValueError(
+                "Поле 'operationAmount.amount' не может быть пустой строкой."
+            )
         try:
-            amount = float(amount_value)
+            amount = float(amount_str)
         except ValueError:
-            raise ValueError(f"amount должен быть числом, получено: {amount_value}")
+            raise ValueError(
+                f"Поле 'operationAmount.amount' должно быть числом, получено: {amount_value}"
+            )
     else:
-        raise TypeError(f"amount должен быть числом или строкой, получено: {type(amount_value)}")
-
-
-    currency_value = transaction["currency"]
-    if not isinstance(currency_value, str):
         raise TypeError(
-            f"currency должно быть строкой, получено: {type(currency_value)}"
+            f"Поле 'operationAmount.amount' должно быть числом или строкой, получено: {type(amount_value).__name__}"
         )
-    currency = currency_value.upper().strip()
 
-    if currency == "RUB":
-        return amount
-
-    if currency not in ("USD", "EUR"):
+    if amount < 0:
         raise ValueError(
-            f"Валюта {currency} не поддерживается. Используйте USD, EUR, RUB."
+            f"Поле 'operationAmount.amount' не может быть отрицательным: {amount}"
+        )
+
+    # Валидация currency.code
+    if not isinstance(currency_code, str):
+        raise TypeError(
+            f"Поле 'operationAmount.currency.code' должно быть строкой, получено: {type(currency_code).__name__}"
+        )
+
+    currency = currency_code.strip().upper()
+    if not currency:
+        raise ValueError(
+            "Поле 'operationAmount.currency.code' не может быть пустой строкой."
+        )
+
+    SUPPORTED_CURRENCIES = {"RUB", "USD", "EUR"}
+    if currency not in SUPPORTED_CURRENCIES:
+        raise ValueError(
+            f"Валюта {currency} не поддерживается. Используйте: {SUPPORTED_CURRENCIES}."
         )
 
     return convert_to_rubles(amount, currency)
