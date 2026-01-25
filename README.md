@@ -163,3 +163,452 @@ Python 3.6 или выше;
 
 Лицензия
 Проект распространяется под лицензией MIT.
+
+mport functools
+from datetime import datetime
+from typing import Any, Callable, Optional
+
+
+def _get_timestamp() -> str:
+    """Возвращает текущую дату и время в формате YYYY-MM-DD HH:MM:SS."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def log(filename: Optional[str] = None) -> Callable:
+    """
+    Декоратор для логирования вызова функции (успех/ошибка) в файл или консоль.
+
+    Args:
+        filename (str, optional): Путь к файлу для логирования. Если None — вывод в консоль.
+    Returns:
+        Callable: Декоратор, оборачивающий функцию.
+    """
+
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            """Обёртка, добавляющая логирование вызова функции."""
+            try:
+                result = func(*args, **kwargs)
+                message = f"{func.__name__} ok"
+
+                if filename:
+                    with open(filename, mode="a", encoding="utf-8") as file:
+                        file.write(f"[{_get_timestamp()}] {message}\n")
+                else:
+                    print(message)
+
+                return result
+
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as e:
+                err_message = (
+                    f"{func.__name__}: error: {type(e).__name__}. "
+                    f"Inputs: {args}, {kwargs}"
+                )
+
+                if filename:
+                    try:
+                        with open(filename, mode="a", encoding="utf-8") as file:
+                            file.write(f"[{_get_timestamp()}] {err_message}\n")
+                    except OSError as log_error:
+                        print(f"Log write error: {log_error}")
+                else:
+                    print(err_message)
+
+                raise e
+
+        return wrapper
+
+    return decorator
+
+import pytest
+import os
+from src.decorators import log
+
+class TestLogDecorator:
+    def setup_method(self):
+        self.test_file_name = "test_log.txt"
+        if os.path.exists(self.test_file_name):
+            os.remove(self.test_file_name)
+
+
+    def teardown_method(self):
+        if os.path.exists(self.test_file_name):
+            os.remove(self.test_file_name)
+
+    def test_successful_execution_console_output(self, capsys):
+        """Тестируем успешное выполнение функции с выводом в консоль"""
+        @log()
+        def successful_func():
+            return "OK"
+
+        successful_func()
+
+        captured = capsys.readouterr()
+        assert "successful_func ok" in captured.out
+
+    def test_error_handling_console_output(self, capsys):
+        """Тестируем возникновение ошибки с выводом в консоль"""
+        @log()
+        def failing_func():
+            raise ValueError("Test Error")
+
+        with pytest.raises(ValueError):
+            failing_func()
+
+        captured = capsys.readouterr()
+        assert "failing_func: error: ValueError" in captured.out
+        assert "Inputs: (), {}" in captured.out
+
+    def test_successful_execution_file_logging(self):
+        """Тестируем успешное выполнение функции с логированием в файл"""
+        @log(filename=self.test_file_name)
+        def successful_func():
+            return "ok"
+
+        successful_func()
+
+        with open(self.test_file_name, 'r', encoding='utf-8') as file:
+            content = file.read().strip()
+
+        assert "successful_func ok" in content
+
+    def test_error_handling_file_logging(self):
+        """Тестируем возникновение ошибки с логированием в файл"""
+        @log(filename=self.test_file_name)
+        def failing_func():
+            raise TypeError("Test Error")
+
+        with pytest.raises(TypeError):
+            failing_func()
+
+        with open(self.test_file_name, 'r', encoding='utf-8') as file:
+            content = file.read().strip()
+
+
+        assert "failing_func: error: TypeError" in content
+        assert "Inputs: (), {}" in content
+
+
+Скопируйте .env.example в .env:
+
+bash
+cp .env.example .env
+Заполните .env своими реальными ключами и настройками.
+
+import json
+import os
+from typing import Any, Dict, List
+
+
+def load_transactions(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Загружает список словарей с данными о финансовых транзакциях из JSON‑файла.
+
+    """
+    try:
+        if not os.path.exists(file_path):
+            print(f"[DEBUG] Файл не найден: {file_path}")
+            return []
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            print(f"[DEBUG] Загружено из файла: {data}")
+
+        if isinstance(data, list):
+            return data
+        else:
+            print(f"[DEBUG] Данные не являются списком (тип: {type(data)})")
+            return []
+
+    except FileNotFoundError:
+        print(f"[DEBUG] FileNotFoundError: файл не найден — {file_path}")
+        return []
+
+    except PermissionError:
+        print(f"[DEBUG] PermissionError: нет доступа к файлу — {file_path}")
+        return []
+
+    except json.JSONDecodeError as e:
+        print(f"[DEBUG] JSONDecodeError: ошибка парсинга JSON — {e}")
+        return []
+
+    except UnicodeDecodeError as e:
+        print(f"[DEBUG] UnicodeDecodeError: ошибка кодировки файла — {e}")
+        return []
+
+    except Exception as e:
+        print(f"[DEBUG] Неожиданная ошибка: {type(e).__name__}: {e}")
+        return []
+
+import unittest
+import json
+from unittest.mock import mock_open, patch
+from src.utils import load_transactions
+
+
+
+class TestLoadTransactions(unittest.TestCase):
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open, read_data="[]")
+    def test_valid_empty_list(self, mock_open_func, mock_exists):
+        """Тест: корректный пустой JSON-список."""
+        result = load_transactions("test.json")
+        self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open, read_data='[{"id": 1, "amount": 100}]')
+    def test_valid_list_of_dicts(self, mock_open_func, mock_exists):
+        """Тест: корректный JSON со списком словарей."""
+        result = load_transactions("test.json")
+        expected = [{"id": 1, "amount": 100}]
+        self.assertEqual(result, expected)
+        mock_open_func.assert_called_once()
+
+    @patch("os.path.exists", return_value=False)
+    def test_file_not_found(self, mock_exists):
+        """Тест: файл не существует."""
+        result = load_transactions("missing.json")
+        self.assertEqual(result, [])
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", side_effect=json.JSONDecodeError("Expecting value", "", 0))
+    def test_invalid_json_format(self, mock_open_func, mock_exists):
+        """Тест: некорректный JSON (ошибка декодирования)."""
+        result = load_transactions("bad.json")
+        self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open, read_data="")
+    def test_empty_file(self, mock_open_func, mock_exists):
+        """Тест: пустой файл (не JSON)."""
+        result = load_transactions("empty.json")
+        self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open, read_data='{"not": "a list"}')
+    def test_json_not_a_list(self, mock_open_func, mock_exists):
+        """Тест: JSON — не список (например, словарь)."""
+        result = load_transactions("not_list.json")
+        self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", side_effect=PermissionError("Access denied"))
+    def test_permission_error(self, mock_open_func, mock_exists):
+        """Тест: ошибка прав доступа к файлу."""
+        result = load_transactions("forbidden.json")
+        self.assertEqual(result, [])
+        mock_open_func.assert_called_once()
+
+import os
+from functools import lru_cache
+from typing import Any, Dict
+
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Получение и проверка API_KEY
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    raise ValueError("API_KEY не найден в .env. Создайте файл .env с API_KEY=ваш_ключ.")
+
+
+BASE_URL = "https://api.apilayer.com/exchangerates_data/convert"
+
+
+@lru_cache(maxsize=128)
+def _get_exchange_rate(from_currency: str, to_currency: str) -> float:
+    """Получает курс конвертации с кешированием."""
+    params = {"from": from_currency, "to": to_currency, "amount": str(1)}
+    headers = {"apikey": API_KEY}
+
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                BASE_URL, params=params, headers=headers, timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if isinstance(data, dict) and "error" in data:
+                error_info = data["error"].get("info", "Неизвестная ошибка")
+                raise Exception(f"API ошибка: {error_info}")
+            elif not isinstance(data, dict):
+                raise Exception("Неверный формат ответа API")
+
+            return float(data["result"])
+
+        except requests.exceptions.RequestException as e:
+            if attempt == 1:
+                raise Exception(f"Ошибка запроса к API после 2 попыток: {e}")
+            continue
+
+    raise Exception("Не удалось получить курс конвертации после 2 попыток")
+
+
+def convert_to_rubles(amount: float, currency: str) -> float:
+    """Конвертирует сумму из валюты в RUB через APILayer."""
+    try:
+        rate = _get_exchange_rate(currency, "RUB")
+        converted = amount * rate
+        return round(converted, 2)
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Сетевой сбой при запросе курса {currency}→RUB: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Ошибка получения курса {currency}→RUB: {e}") from e
+
+
+def process_transaction(transaction: Dict[str, Any]) -> float:
+    """Обрабатывает транзакцию и возвращает сумму в рублях."""
+
+    # Проверка наличия обязательных ключей
+    if "operationAmount" not in transaction:
+        raise KeyError("Поле 'operationAmount' отсутствует в транзакции.")
+
+    if "amount" not in transaction["operationAmount"]:
+        raise KeyError("Поле 'operationAmount.amount' отсутствует в транзакции.")
+    if "currency" not in transaction["operationAmount"]:
+        raise KeyError("Поле 'operationAmount.currency' отсутствует в транзакции.")
+    if "code" not in transaction["operationAmount"]["currency"]:
+        raise KeyError("Поле 'operationAmount.currency.code' отсутствует в транзакции.")
+
+    # Извлечение данных
+    amount_value = transaction["operationAmount"]["amount"]
+    currency_code = transaction["operationAmount"]["currency"]["code"]
+
+    # Валидация amount
+    if isinstance(amount_value, (int, float)):
+        amount = float(amount_value)
+    elif isinstance(amount_value, str):
+        amount_str = amount_value.strip()
+        if not amount_str:
+            raise ValueError(
+                "Поле 'operationAmount.amount' не может быть пустой строкой."
+            )
+        try:
+            amount = float(amount_str)
+        except ValueError:
+            raise ValueError(
+                f"Поле 'operationAmount.amount' должно быть числом, получено: {amount_value}"
+            )
+    else:
+        raise TypeError(
+            f"Поле 'operationAmount.amount' должно быть числом или строкой, получено: {type(amount_value).__name__}"
+        )
+
+    if amount < 0:
+        raise ValueError(
+            f"Поле 'operationAmount.amount' не может быть отрицательным: {amount}"
+        )
+
+    # Валидация currency.code
+    if not isinstance(currency_code, str):
+        raise TypeError(
+            f"Поле 'operationAmount.currency.code' должно быть строкой, получено: {type(currency_code).__name__}"
+        )
+
+    currency = currency_code.strip().upper()
+    if not currency:
+        raise ValueError(
+            "Поле 'operationAmount.currency.code' не может быть пустой строкой."
+        )
+
+    SUPPORTED_CURRENCIES = {"RUB", "USD", "EUR"}
+    if currency not in SUPPORTED_CURRENCIES:
+        raise ValueError(
+            f"Валюта {currency} не поддерживается. Используйте: {SUPPORTED_CURRENCIES}."
+        )
+
+    return convert_to_rubles(amount, currency)
+
+import unittest
+from unittest.mock import patch, MagicMock
+from src.external_api import (
+    _get_exchange_rate,
+    convert_to_rubles,
+    process_transaction
+)
+
+
+class TestCurrencyConversion(unittest.TestCase):
+
+    @patch('requests.get')
+    def test_get_exchange_rate_success(self, mock_requests_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'result': 65.5}
+
+        mock_requests_get.return_value = mock_response
+
+        result = _get_exchange_rate('USD', 'RUB')
+        self.assertEqual(result, 65.5)
+
+    @patch('src.external_api._get_exchange_rate')  # было: 'main._get_exchange_rate'
+    def test_convert_to_rubles(self, mock_getexchange_rate):
+        mock_getexchange_rate.return_value = 65.5
+        result = convert_to_rubles(100, 'USD')
+        self.assertAlmostEqual(result, 6550.0, places=2)
+
+    def test_process_transaction_valid_input(self):
+        valid_transaction = {
+            "operationAmount": {
+                "amount": "100",
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
+        with patch('src.external_api.convert_to_rubles') as mock_convert:  # было: 'main.convert_to_rubles'
+            mock_convert.return_value = 6550.0
+            result = process_transaction(valid_transaction)
+            self.assertEqual(result, 6550.0)
+
+    def test_process_transaction_missing_operation_amount(self):
+        invalid_transaction = {}
+        with self.assertRaises(KeyError):
+            process_transaction(invalid_transaction)
+
+    def test_process_transaction_invalid_amount_type(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": {},
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
+        with self.assertRaises(TypeError):
+            process_transaction(invalid_transaction)
+
+    def test_process_transaction_negative_amount(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": "-100",
+                "currency": {
+                    "code": "USD"
+                }
+            }
+        }
+        with self.assertRaises(ValueError):
+            process_transaction(invalid_transaction)
+
+    def test_process_transaction_unsupported_currency(self):
+        invalid_transaction = {
+            "operationAmount": {
+                "amount": "100",
+                "currency": {
+                    "code": "GBP"
+                }
+            }
+        }
+        with self.assertRaises(ValueError):
+            process_transaction(invalid_transaction)
