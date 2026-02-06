@@ -925,3 +925,852 @@ class TestFinancialOperationsReader(unittest.TestCase):
             read_csv_file('/fake/path/to/bad_encoding.csv')
         self.assertIn('недопустимый байт', str(cm.exception))
 
+
+import csv
+import json
+from datetime import date, datetime, time, timedelta
+from typing import Any, Dict, List
+
+from openpyxl import load_workbook
+from openpyxl.worksheet.worksheet import Worksheet
+
+
+def load_json_transactions(file_path: str) -> List[Dict[str, Any]]:
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError("JSON должен содержать список транзакций")
+        return data
+
+
+def load_csv_transactions(file_path: str) -> List[Dict[str, Any]]:
+    """Загрузка транзакций из CSV-файла."""
+    transactions = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            transactions.append(row)
+    return transactions
+
+
+def _normalize_cell_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, date) or isinstance(value, datetime):
+        return value.isoformat()
+    elif isinstance(value, time):
+        return value.strftime("%H:%M:%S")
+    elif isinstance(value, timedelta):
+        return str(value)
+    elif hasattr(value, "text"):
+        return str(value.text)
+    return value
+
+
+def load_xlsx_transactions(filepath: str) -> List[Dict[str, Any]]:
+    wb = load_workbook(filepath)
+    sheet = wb.active
+
+    if sheet is None:
+        raise ValueError("Активный лист не найден")
+    if not isinstance(sheet, Worksheet):
+        raise TypeError(f"Лист имеет тип {type(sheet)}, а не Worksheet")
+
+    headers = [str(cell.value) if cell.value is not None else "" for cell in sheet[1]]
+
+    transactions: List[Dict[str, Any]] = []
+
+    for row in sheet.iter_rows(min_row=2):
+        transaction: Dict[str, Any] = {}
+        for idx, cell in enumerate(row):
+            if idx < len(headers):
+                key = headers[idx]
+                raw_value = cell.value
+                normalized_value = _normalize_cell_value(raw_value)
+                transaction[key] = normalized_value
+        transactions.append(transaction)
+
+    return transactions
+
+
+def filter_by_status(
+    transactions: List[Dict[str, Any]], status: str
+) -> List[Dict[str, Any]]:
+    """Фильтрация транзакций по статусу (с приведением к верхнему регистру)."""
+    return [t for t in transactions if t.get("state", "").upper() == status.upper()]
+
+
+def sort_transactions(
+    transactions: List[Dict[str, Any]], ascending: bool = True
+) -> List[Dict[str, Any]]:
+    """Сортировка транзакций по дате."""
+    return sorted(
+        transactions,
+        key=lambda x: datetime.strptime(x["date"], "%d.%m.%Y"),
+        reverse=not ascending,
+    )
+
+
+def filter_ruble_transactions(
+    transactions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Фильтрация транзакций только в рублях."""
+    ruble_variants = ["руб", "rub", "rur"]  # Поддерживаем разные написания
+    return [
+        t
+        for t in transactions
+        if (
+            t.get("operationAmount", {}).get("currency", {}).get("name", "").lower()
+            in ruble_variants
+        )
+    ]
+
+
+def search_by_keyword(
+    transactions: List[Dict[str, Any]], keyword: str
+) -> List[Dict[str, Any]]:
+    """Поиск транзакций по ключевому слову в описании."""
+    return [
+        t
+        for t in transactions
+        if keyword.lower() in str(t.get("description", "")).lower()
+    ]
+
+
+def print_transactions(transactions: List[Dict[str, Any]]) -> None:
+    """Вывод транзакций в консоль."""
+    if not transactions:
+        print("Не найдено ни одной транзакции, подходящей под ваши условия фильтрации")
+        return
+
+    print(f"\nВсего банковских операций в выборке: {len(transactions)}\n")
+    for t in transactions:
+        date = t.get("date", "")
+        description = t.get("description", "")
+        from_acc = t.get("from", "")
+        to_acc = t.get("to", "")
+
+        # Получаем сумму и валюту
+        op_amount = t.get("operationAmount", {})
+        amount = op_amount.get("amount", "")
+        currency = op_amount.get("currency", {}).get("name", "")
+
+        print(f"{date} {description}")
+
+        if from_acc:
+            print(f"{from_acc} -> {to_acc}")
+        else:
+            # Маскируем последние 4 цифры счёта ВСЕГДА (даже если короткий)
+            to_str = str(to_acc) if to_acc else ""
+            if len(to_str) >= 4:
+                print(f"Счет **{to_str[-4:]}")
+            else:
+                # Если меньше 4 цифр — выводим как есть, но с префиксом "Счет **"
+                print(f"Счет **{to_str}")
+
+        print(f"Сумма: {amount} {currency}\n")
+
+
+def main() -> None:
+    print("Привет! Добро пожаловать в программу работы с банковскими транзакциями.")
+    print("Выберите необходимый пункт меню:")
+    print("1. Получить информацию о транзакциях из JSON-файла")
+    print("2. Получить информацию о транзакциях из CSV-файла")
+    print("3. Получить информацию о транзакциях из XLSX-файла")
+
+    choice = input("> ")
+
+    if choice == "1":
+        print("Для обработки выбран JSON-файл.")
+        file_path = input("Введите путь к JSON-файлу: ")
+        transactions = load_json_transactions(file_path)
+    elif choice == "2":
+        print("Для обработки выбран CSV-файл.")
+        file_path = input("Введите путь к CSV-файлу: ")
+        transactions = load_csv_transactions(file_path)
+    elif choice == "3":
+        print("Для обработки выбран XLSX-файл.")
+        file_path = input("Введите путь к XLSX-файлу: ")
+        transactions = load_xlsx_transactions(file_path)
+    else:
+        print("Неверный выбор. Завершение программы.")
+        return
+
+    valid_statuses = ["EXECUTED", "CANCELED", "PENDING"]
+    status = ""
+    while True:
+        print("Введите статус, по которому необходимо выполнить фильтрацию.")
+        print(f"Доступные для фильтровки статусы: {', '.join(valid_statuses)}")
+        status = input("> ").strip()
+        if status.upper() in valid_statuses:
+            break
+        else:
+            print(f'Статус операции "{status}" недоступен.')
+
+    print(f'Операции отфильтрованы по статусу "{status.upper()}"')
+    filtered_transactions = filter_by_status(transactions, status)
+
+    sort_choice = input("Отсортировать операции по дате? Да/Нет\n> ").strip().lower()
+    if sort_choice == "да":
+        order = (
+            input("Отсортировать по возрастанию или по убыванию?\n> ").strip().lower()
+        )
+        ascending = order == "по возрастанию"
+        filtered_transactions = sort_transactions(filtered_transactions, ascending)
+
+    ruble_choice = (
+        input("Выводить только рублёвые транзакции? Да/Нет\n> ").strip().lower()
+    )
+    if ruble_choice == "да":
+        filtered_transactions = filter_ruble_transactions(filtered_transactions)
+
+    keyword_choice = (
+        input(
+            "Отфильтровать список транзакций по определённому слову в описании? Да/Нет\n> "
+        )
+        .strip()
+        .lower()
+    )
+    if keyword_choice == "да":
+        keyword = input("Введите ключевое слово: ").strip()
+        filtered_transactions = search_by_keyword(filtered_transactions, keyword)
+
+    print("Распечатываю итоговый список транзакций...")
+    print_transactions(filtered_transactions)
+
+
+if __name__ == "__main__":
+    main()
+
+
+import unittest
+from unittest.mock import mock_open, patch, MagicMock
+from datetime import datetime, time, timedelta
+
+
+
+# Импортируем функции из main.py
+from src.main import (
+    load_json_transactions,
+    load_csv_transactions,
+    load_xlsx_transactions,
+    filter_by_status,
+    sort_transactions,
+    filter_ruble_transactions,
+    search_by_keyword,
+    print_transactions,
+    main,
+    _normalize_cell_value
+)
+
+
+class TestTransactionFunctions(unittest.TestCase):
+
+    def setUp(self):
+        """Подготавливаем тестовые данные с корректной структурой."""
+        self.transactions = [
+            {
+                "date": "08.12.2019",
+                "description": "Открытие вклада",
+                "to": "4321",
+                "operationAmount": {
+                    "amount": "40542",
+                    "currency": {"name": "руб"}
+                },
+                "state": "EXECUTED"
+            },
+            {
+                "date": "12.11.2019",
+                "description": "Перевод с карты на карту",
+                "from": "MasterCard 7771 27** **** 3727",
+                "to": "Visa Platinum 1293 38** **** 9203",
+                "operationAmount": {
+                    "amount": "130",
+                    "currency": {"name": "USD"}
+                },
+                "state": "CANCELED"
+            },
+            {
+                "date": "18.07.2018",
+                "description": "Перевод организации",
+                "from": "Visa Platinum 7492 65** **** 7202",
+                "to": "0034",
+                "operationAmount": {
+                    "amount": "8390",
+                    "currency": {"name": "руб"}
+                },
+                "state": "EXECUTED"
+            }
+        ]
+
+    # --- Тесты загрузки данных ---
+
+    @patch("builtins.open", new_callable=mock_open, read_data='[{"state": "EXECUTED"}]')
+    def test_load_json_transactions(self, mock_file):
+        result = load_json_transactions("dummy.json")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["state"], "EXECUTED")
+
+    @patch("builtins.open", new_callable=mock_open, read_data="state,amount\nEXECUTED,100")
+    def test_load_csv_transactions(self, mock_file):
+        result = load_csv_transactions("dummy.csv")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["state"], "EXECUTED")
+        self.assertEqual(result[0]["amount"], "100")
+
+    class TestTransactionFunctions(unittest.TestCase):
+
+        @patch("openpyxl.load_workbook") # ← критично: путь к функции в ВАШЕМ модуле
+        def test_load_xlsx_transactions(self, mock_load_workbook):
+            # 1. Настраиваем мок для рабочей книги
+            mock_wb = MagicMock()
+            mock_sheet = MagicMock()
+            mock_wb.active = mock_sheet
+            mock_load_workbook.return_value = mock_wb  # ← мок возвращает наш mock_wb
+
+            # 2. Имитируем ячейки Excel
+            class MockCell:
+                def __init__(self, value):
+                    self.value = value
+
+            headers = [
+                MockCell("date"),
+                MockCell("state"),
+                MockCell("operationAmount")
+            ]
+            data_row = [
+                MockCell("01.01.2020"),
+                MockCell("EXECUTED"),
+                MockCell('{"amount": "1000", "currency": {"name": "руб"}}')
+            ]
+
+            # 3. Настраиваем поведение моков
+            mock_sheet.__getitem__.return_value = headers
+            mock_sheet.iter_rows.return_value = iter([data_row])
+
+            # 4. Вызываем тестируемую функцию
+            result = load_xlsx_transactions("dummy.xlsx")
+
+            # 5. Проверки
+            self.assertEqual(len(result), 1)
+            self.assertIn("date", result[0])
+            self.assertIn("state", result[0])
+            self.assertEqual(result[0]["date"], "01.01.2020")
+            self.assertEqual(result[0]["state"], "EXECUTED")
+            self.assertIn("operationAmount", result[0])
+            self.assertEqual(result[0]["operationAmount"]["amount"], "1000")
+            self.assertEqual(
+                result[0]["operationAmount"]["currency"]["name"],
+                "руб"
+            )
+    # --- Тесты фильтрации и обработки ---
+
+    def test_filter_by_status_case_insensitive(self):
+        """Проверяем фильтрацию по статусу с игнорированием регистра."""
+        result = filter_by_status(self.transactions, "executed")
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(t["state"] == "EXECUTED" for t in result))
+
+    def test_sort_transactions_ascending(self):
+        """Сортировка по дате (возрастание)."""
+        result = sort_transactions(self.transactions, ascending=True)
+        dates = [t["date"] for t in result]
+        expected = ["18.07.2018", "12.11.2019", "08.12.2019"]
+        self.assertEqual(dates, expected)
+
+    def test_sort_transactions_descending(self):
+        """Сортировка по дате (убывание)."""
+        result = sort_transactions(self.transactions, ascending=False)
+        dates = [t["date"] for t in result]
+        expected = ["08.12.2019", "12.11.2019", "18.07.2018"]
+        self.assertEqual(dates, expected)
+
+    def test_filter_ruble_transactions(self):
+        """Фильтрация только рублёвых транзакций."""
+        result = filter_ruble_transactions(self.transactions)
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(
+            t["operationAmount"]["currency"]["name"].lower() in ["руб", "rub", "rur"]
+            for t in result
+        ))
+
+    def test_search_by_keyword(self):
+        """Поиск по ключевому слову в описании."""
+        result = search_by_keyword(self.transactions, "вклад")
+        self.assertEqual(len(result), 1)
+        self.assertIn("вклад", result[0]["description"].lower())
+
+        result = search_by_keyword(self.transactions, "перевод")
+        self.assertEqual(len(result), 2)
+
+    # --- Тесты вывода ---
+
+    def test_print_transactions_empty(self):
+        """Вывод для пустого списка."""
+        with patch("builtins.print") as mock_print:
+            print_transactions([])
+            mock_print.assert_any_call("Не найдено ни одной транзакции, подходящей под ваши условия фильтрации")
+
+    def test_print_transactions_non_empty(self):
+        """Вывод непустого списка транзакций."""
+        with patch("builtins.print") as mock_print:
+            print_transactions(self.transactions[:1])
+
+            # Проверяем ключевые строки вывода
+            mock_print.assert_any_call("\nВсего банковских операций в выборке: 1\n")
+            mock_print.assert_any_call("08.12.2019 Открытие вклада")
+            mock_print.assert_any_call("Счет **4321")
+            mock_print.assert_any_call("Сумма: 40542 руб\n")
+
+    # --- Тест main() ---
+
+    def test_main_with_ruble_filter(self):
+        """Полный сценарий: загрузка, фильтрация по статусу и валюте."""
+        transactions = [
+            {
+                "id": 1,
+                "state": "EXECUTED",
+                "date": "2023-01-01T12:00:00",
+                "operationAmount": {
+                    "amount": "1000.00",
+                    "currency": {"name": "руб"}
+                },
+                "description": "Перевод",
+                "from": "Счёт 1234",
+                "to": "Счёт 567"
+            },
+            {
+                "id": 2,
+                "state": "EXECUTED",
+                "date": "2023-01-02T13:00:00",
+                "operationAmount": {
+                    "amount": "2500.50",
+                    "currency": {"name": "руб"}
+                },
+                "description": "Оплата",
+                "from": "Карта 9999",
+                "to": "Магазин X"
+            },
+            {
+                "id": 3,
+                "state": "EXECUTED",
+                "date": "2023-01-03T14:00:00",
+                "operationAmount": {
+                    "amount": "100.00",
+                    "currency": {"name": "USD"}
+                },
+                "description": "Обмен валюты",
+                "from": "Счёт 1111",
+                "to": "Банк Y"
+            }
+        ]
+
+        user_inputs = [
+            "1",  # выбор JSON
+            "test.json",  # путь к файлу
+            "EXECUTED",  # статус для фильтрации
+            "нет",  # не сортировать
+            "да",  # фильтровать по валюте
+            "руб",  # валюта
+            "нет"  # не искать по ключевому слову
+        ]
+
+        with patch("builtins.input", side_effect=user_inputs):
+            with patch("src.main.print_transactions") as mock_print:
+                with patch("src.main.load_json_transactions") as mock_load_json:
+                    mock_load_json.return_value = transactions
+
+                    print("[ТЕСТ] Начальные транзакции (из load_json_transactions):")
+                    for t in transactions:
+                        print(
+                            f"  ID {t['id']}, статус: {t['state']}, валюта: {t['operationAmount']['currency']['name']}")
+
+                    main()
+
+                    assert mock_print.call_count >= 1, "print_transactions не вызван!"
+                    printed_transactions = mock_print.call_args_list[-1][0][0]
+
+                    print(f"[ТЕСТ] Транзакции, переданные в print_transactions: {len(printed_transactions)}")
+                    for t in printed_transactions:
+                        print(f"  ID {t['id']}, валюта: {t['operationAmount']['currency']['name']}")
+
+                    # Основные проверки
+                    assert len(printed_transactions) == 2, (
+                        f"Ожидалось 2 рублёвые транзакции, но получено {len(printed_transactions)}"
+                    )
+
+                    for t in printed_transactions:
+                        assert t["operationAmount"]["currency"]["name"].lower() == "руб", (
+                            f"Транзакция ID {t['id']} имеет валюту {t['operationAmount']['currency']['name']}"
+                        )
+
+    def test_main_with_keyword_search(self):
+        """Тест main() с поиском по ключевому слову."""
+        transactions = [
+            {
+                "id": 1,
+                "state": "EXECUTED",
+                "date": "2023-01-01T12:00:00",
+                "operationAmount": {
+                    "amount": "1000.00",
+                    "currency": {"name": "руб"}
+                },
+                "description": "Перевод другу",
+                "from": "Счёт 1234",
+                "to": "Счёт 5678"
+            },
+            {
+                "id": 2,
+                "state": "EXECUTED",
+                "date": "2023-01-02T13:00:00",
+                "operationAmount": {
+                    "amount": "500.00",
+                    "currency": {"name": "руб"}
+                },
+                "description": "Оплата интернета",
+                "from": "Карта 9999",
+                "to": "Ростелеком"
+            }
+        ]
+
+        user_inputs = [
+            "1", "test.json", "EXECUTED", "нет", "нет", "да", "интернет"
+        ]
+
+        with patch("builtins.input", side_effect=user_inputs):
+            with patch("src.main.print_transactions") as mock_print:
+                with patch("src.main.load_json_transactions") as mock_load_json:
+                    mock_load_json.return_value = transactions
+                    main()
+
+                    printed_transactions = mock_print.call_args_list[-1][0][0]
+                    assert len(printed_transactions) == 1
+                    assert "интернет" in printed_transactions[0]["description"].lower()
+
+    def test_main_invalid_choice(self):
+        """Тест на неверный выбор формата файла."""
+        user_inputs = ["4"]  # неверный пункт меню
+
+        with patch("builtins.input", side_effect=user_inputs):
+            with patch("builtins.print") as mock_print:
+                main()
+                mock_print.assert_any_call("Неверный выбор. Завершение программы.")
+
+    def test_load_json_transactions_not_list(self):
+        """JSON содержит не список, а объект — должно вызвать ValueError."""
+        with patch("builtins.open", mock_open(read_data='{"key": "value"}')):
+            with self.assertRaises(ValueError) as cm:
+                load_json_transactions("not_list.json")
+            self.assertIn("JSON должен содержать список транзакций", str(cm.exception))
+
+    def test_load_csv_transactions_empty_file(self):
+        """Пустой CSV-файл (только заголовки или пусто)."""
+        with patch("builtins.open", mock_open(read_data="date,description\n")):
+            result = load_csv_transactions("empty.csv")
+            self.assertEqual(len(result), 0)
+
+    def test_load_csv_transactions_missing_columns(self):
+        """CSV без некоторых ожидаемых колонок."""
+        data = "state,amount\nEXECUTED,100"
+        with patch("builtins.open", mock_open(read_data=data)):
+            result = load_csv_transactions("partial.csv")
+            self.assertIn("state", result[0])
+            self.assertIn("amount", result[0])
+            # Другие поля будут отсутствовать — это нормально
+
+    def test_filter_by_status_missing_state_key(self):
+        """Транзакция без поля 'state' — не должна попасть в результат."""
+        transactions = [
+            {"date": "01.01.2020", "description": "Test"},  # нет state
+            {"date": "02.01.2020", "state": "EXECUTED", "description": "OK"}
+        ]
+        result = filter_by_status(transactions, "EXECUTED")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["state"], "EXECUTED")
+
+    def test_sort_transactions_invalid_date_format(self):
+        """Сортировка при невалидном формате даты — должна пропускать или поднимать ошибку."""
+        transactions = [
+            {"date": "не дата", "description": "Bad"},
+            {"date": "01.01.2020", "description": "Good"}
+        ]
+        # Ожидается, что исключение поднимется при попытке парсинга
+        with self.assertRaises(ValueError):
+            sort_transactions(transactions, ascending=True)
+
+    def test_filter_ruble_transactions_case_insensitive(self):
+        """Фильтрация по валюте с разными регистрами."""
+        transactions = [
+            {
+                "operationAmount": {"currency": {"name": "RUB"}}
+            },
+            {
+                "operationAmount": {"currency": {"name": "rub"}}
+            },
+            {
+                "operationAmount": {"currency": {"name": "RUR"}}
+            },
+            {
+                "operationAmount": {"currency": {"name": "USD"}}
+            }
+        ]
+        result = filter_ruble_transactions(transactions)
+        self.assertEqual(len(result), 3)
+
+    def test_search_by_keyword_case_insensitive(self):
+        """Поиск по ключевому слову с разным регистром."""
+        result = search_by_keyword(self.transactions, "ПЕРЕВОД")
+        self.assertEqual(len(result), 2)  # оба перевода найдены
+
+    def test_search_by_keyword_no_match(self):
+        """Ключевое слово не найдено — пустой результат."""
+        result = search_by_keyword(self.transactions, "ипотека")
+        self.assertEqual(len(result), 0)
+
+    def test_search_by_keyword_missing_description(self):
+        """Транзакция без описания — не вызывает ошибки."""
+        transactions = [
+            {"id": 1},  # нет description
+            {"id": 2, "description": "платеж"}
+        ]
+        result = search_by_keyword(transactions, "платеж")
+        self.assertEqual(len(result), 1)
+
+    def test_print_transactions_with_missing_fields(self):
+        """Вывод транзакции с отсутствующими полями (from, to, amount и т.п.)."""
+        transaction = {
+            "date": "01.01.2020",
+            "description": "Тест",
+            # отсутствуют: from, to, operationAmount
+        }
+        with patch("builtins.print") as mock_print:
+            print_transactions([transaction])
+
+            mock_print.assert_any_call("01.01.2020 Тест")
+            mock_print.assert_any_call("Сумма:  \n")  # amount и currency пустые
+
+    def test_normalize_cell_value_datetime(self):
+        """_normalize_cell_value: преобразование datetime в ISO-строку."""
+        dt = datetime(2020, 1, 1, 12, 30, 45)
+        self.assertEqual(_normalize_cell_value(dt), "2020-01-01T12:30:45")
+
+    def test_normalize_cell_value_time(self):
+        """_normalize_cell_value: преобразование time в HH:MM:SS."""
+        t = time(12, 30, 45)
+        self.assertEqual(_normalize_cell_value(t), "12:30:45")
+
+    def test_normalize_cell_value_timedelta(self):
+        """_normalize_cell_value: timedelta → строка."""
+        td = timedelta(hours=1, minutes=30)
+        self.assertEqual(_normalize_cell_value(td), "1:30:00")
+    if __name__ == "__main__":
+        unittest.main()
+
+
+
+import unittest
+from src.process_bank import process_bank_search, process_bank_operations
+
+
+class TestProcessBankSearch(unittest.TestCase):
+    def setUp(self):
+        self.test_data = [
+            {"id": 1, "amount": 1000, "description": "Оплата телефона"},
+            {"id": 2, "amount": 2000, "description": "Пополнение счета"},
+            {"id": 3, "amount": 500, "description": "Покупка продуктов"},
+            {"id": 4, "amount": 700, "description": "Перевод другу"},
+        ]
+
+    def test_found_match(self):
+        result = process_bank_search(self.test_data, "телеф")
+        expected = [{"id": 1, "amount": 1000, "description": "Оплата телефона"}]
+        self.assertEqual(result, expected)
+
+    def test_no_matches(self):
+        result = process_bank_search(self.test_data, "машина")
+        self.assertEqual(result, [])
+
+    def test_empty_data(self):
+        result = process_bank_search([], "любое_слово")
+        self.assertEqual(result, [])
+
+    def test_empty_query(self):
+        result = process_bank_search(self.test_data, "")
+        self.assertEqual(result, self.test_data)
+
+    def test_case_insensitive_search(self):
+        result = process_bank_search(self.test_data, "пополнение")
+        expected = [{"id": 2, "amount": 2000, "description": "Пополнение счета"}]
+        self.assertEqual(result, expected)
+
+    def test_special_chars_in_query(self):
+        """Тест: запрос содержит спецсимволы (экранируются)."""
+        result = process_bank_search(self.test_data, "тел.+фон")
+        # Без re.escape "тел.+фон" искало бы "тел", затем любой символ, затем "фон"
+        # С re.escape ищет буквально "тел.+фон" → не находит
+        self.assertEqual(result, [])
+
+
+    def test_regex_literal_search(self):
+        """Тест: если убрать re.escape, можно было бы искать по шаблону."""
+        # В текущей реализации это не поддерживается (намеренно)
+        pass
+
+
+
+class TestProcessBankOperations(unittest.TestCase):
+    def setUp(self):
+        self.test_data = [
+            {"id": 1, "amount": 1000, "description": "Оплата телефона МТС"},
+            {"id": 2, "amount": 2000, "description": "Пополнение счёта через банкомат"},
+            {"id": 3, "amount": 500, "description": "Покупка продуктов в магазине"},
+            {"id": 4, "amount": 300, "description": "Оплата интернета"},
+            {"id": 5, "amount": 1500, "description": "Перевод зарплаты"},
+        ]
+
+    def test_count_categories(self):
+        categories = ["телефон", "продукты", "зарплата"]
+        result = process_bank_operations(self.test_data, categories)
+        expected = {"телефон": 1}
+        self.assertEqual(result, expected)
+
+    def test_no_matching_categories(self):
+        categories = ["машина", "отдых"]
+        result = process_bank_operations(self.test_data, categories)
+        self.assertEqual(result, {})
+
+    def test_empty_transactions(self):
+        categories = ["телефон"]
+        result = process_bank_operations([], categories)
+        self.assertEqual(result, {})
+
+    def test_multiple_matches_one_category(self):
+        # Транзакция учитывается только по первой подходящей категории
+        categories = ["оплата", "перевод"]
+        result = process_bank_operations(self.test_data, categories)
+        # "Оплата телефона" и "Оплата интернета" → категория "оплата"
+        # "Перевод зарплаты" → категория "перевод"
+        expected = {"оплата": 2, "перевод": 1}
+        self.assertEqual(result, expected)
+
+    def test_case_insensitive_category(self):
+        # Определяем список категорий, которые ищем
+        categories = ["ТЕЛЕФОН", "ПРОДУКТЫ", "РАЗВЛЕЧЕНИЯ"]  # ← добавьте эту строку!
+
+        # Ожидаемый результат: только "ТЕЛЕФОН" должен быть найден (1 транзакция)
+        expected = {"ТЕЛЕФОН": 1}
+
+        # Вызываем тестируемую функцию
+        result = process_bank_operations(self.test_data, categories)
+
+        # Проверяем результат
+        self.assertEqual(result, expected)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+import unittest
+from src.process_bank import process_bank_search, process_bank_operations
+
+
+class TestProcessBankSearch(unittest.TestCase):
+    def setUp(self):
+        self.test_data = [
+            {"id": 1, "amount": 1000, "description": "Оплата телефона"},
+            {"id": 2, "amount": 2000, "description": "Пополнение счета"},
+            {"id": 3, "amount": 500, "description": "Покупка продуктов"},
+            {"id": 4, "amount": 700, "description": "Перевод другу"},
+        ]
+
+    def test_found_match(self):
+        result = process_bank_search(self.test_data, "телеф")
+        expected = [{"id": 1, "amount": 1000, "description": "Оплата телефона"}]
+        self.assertEqual(result, expected)
+
+    def test_no_matches(self):
+        result = process_bank_search(self.test_data, "машина")
+        self.assertEqual(result, [])
+
+    def test_empty_data(self):
+        result = process_bank_search([], "любое_слово")
+        self.assertEqual(result, [])
+
+    def test_empty_query(self):
+        result = process_bank_search(self.test_data, "")
+        self.assertEqual(result, self.test_data)
+
+    def test_case_insensitive_search(self):
+        result = process_bank_search(self.test_data, "пополнение")
+        expected = [{"id": 2, "amount": 2000, "description": "Пополнение счета"}]
+        self.assertEqual(result, expected)
+
+    def test_special_chars_in_query(self):
+        """Тест: запрос содержит спецсимволы (экранируются)."""
+        result = process_bank_search(self.test_data, "тел.+фон")
+        # Без re.escape "тел.+фон" искало бы "тел", затем любой символ, затем "фон"
+        # С re.escape ищет буквально "тел.+фон" → не находит
+        self.assertEqual(result, [])
+
+
+    def test_regex_literal_search(self):
+        """Тест: если убрать re.escape, можно было бы искать по шаблону."""
+        # В текущей реализации это не поддерживается (намеренно)
+        pass
+
+
+
+class TestProcessBankOperations(unittest.TestCase):
+    def setUp(self):
+        self.test_data = [
+            {"id": 1, "amount": 1000, "description": "Оплата телефона МТС"},
+            {"id": 2, "amount": 2000, "description": "Пополнение счёта через банкомат"},
+            {"id": 3, "amount": 500, "description": "Покупка продуктов в магазине"},
+            {"id": 4, "amount": 300, "description": "Оплата интернета"},
+            {"id": 5, "amount": 1500, "description": "Перевод зарплаты"},
+        ]
+
+    def test_count_categories(self):
+        categories = ["телефон", "продукты", "зарплата"]
+        result = process_bank_operations(self.test_data, categories)
+        expected = {"телефон": 1}
+        self.assertEqual(result, expected)
+
+    def test_no_matching_categories(self):
+        categories = ["машина", "отдых"]
+        result = process_bank_operations(self.test_data, categories)
+        self.assertEqual(result, {})
+
+    def test_empty_transactions(self):
+        categories = ["телефон"]
+        result = process_bank_operations([], categories)
+        self.assertEqual(result, {})
+
+    def test_multiple_matches_one_category(self):
+        # Транзакция учитывается только по первой подходящей категории
+        categories = ["оплата", "перевод"]
+        result = process_bank_operations(self.test_data, categories)
+        # "Оплата телефона" и "Оплата интернета" → категория "оплата"
+        # "Перевод зарплаты" → категория "перевод"
+        expected = {"оплата": 2, "перевод": 1}
+        self.assertEqual(result, expected)
+
+    def test_case_insensitive_category(self):
+        # Определяем список категорий, которые ищем
+        categories = ["ТЕЛЕФОН", "ПРОДУКТЫ", "РАЗВЛЕЧЕНИЯ"]  # ← добавьте эту строку!
+
+        # Ожидаемый результат: только "ТЕЛЕФОН" должен быть найден (1 транзакция)
+        expected = {"ТЕЛЕФОН": 1}
+
+        # Вызываем тестируемую функцию
+        result = process_bank_operations(self.test_data, categories)
+
+        # Проверяем результат
+        self.assertEqual(result, expected)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

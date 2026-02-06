@@ -208,6 +208,17 @@ socks = ["PySocks (>=1.5.6,!=1.5.7)"]
 use-chardet-on-py3 = ["chardet (>=3.0.2,<6)"]
 
 [[package]]
+name = "types-openpyxl"
+version = "3.1.5.20250919"
+description = "Typing stubs for openpyxl"
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "types_openpyxl-3.1.5.20250919-py3-none-any.whl", hash = "sha256:bd06f18b12fd5e1c9f0b666ee6151d8140216afa7496f7ebb9fe9d33a1a3ce99"},
+    {file = "types_openpyxl-3.1.5.20250919.tar.gz", hash = "sha256:232b5906773eebace1509b8994cdadda043f692cfdba9bfbb86ca921d54d32d7"},
+]
+
+[[package]]
 name = "urllib3"
 version = "2.6.2"
 description = "HTTP library with thread-safe connection pooling, file post, and more."
@@ -227,4 +238,4 @@ zstd = ["backports-zstd (>=1.0.0)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "576f031eae43a6722c4187d36b6429d97ea84dd44422772b6ac9c89896efad17"
+content-hash = "9f36a064e98a3f178f5d4a9ec3a05d358f4d660f8921b2fb09f4e1a76005205b"
