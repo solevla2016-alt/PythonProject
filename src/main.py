@@ -1,215 +1,241 @@
-import csv
-import json
-from datetime import date, datetime, time, timedelta
+import os
+from datetime import datetime
 from typing import Any, Dict, List
 
-from openpyxl import load_workbook
-from openpyxl.worksheet.worksheet import Worksheet
+from src.external_api import \
+    process_transaction  # process_transaction лежит здесь!
+from src.financial_operations_reader import read_csv_file, read_excel_file
+from src.process_bank import process_bank_search
+from src.processing import filter_by_state, sort_by_date
+from src.utils import load_transactions
 
 
-def load_json_transactions(file_path: str) -> List[Dict[str, Any]]:
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        if not isinstance(data, list):
-            raise ValueError("JSON должен содержать список транзакций")
-        return data
+def get_mask_card_number(card_number: str) -> str:
+    if len(card_number) != 16 or not card_number.isdigit():
+        return ""
+    return f"{card_number[:4]} {card_number[4:6]}** **** {card_number[-4:]}"
 
 
-def load_csv_transactions(file_path: str) -> List[Dict[str, Any]]:
-    """Загрузка транзакций из CSV-файла."""
-    transactions = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            transactions.append(row)
-    return transactions
+def get_mask_account(account_number: str) -> str:
+    if len(account_number) < 4 or not account_number.isdigit():
+        return ""
+    return f"**{account_number[-4:]}"
 
 
-def _normalize_cell_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, date) or isinstance(value, datetime):
-        return value.isoformat()
-    elif isinstance(value, time):
-        return value.strftime("%H:%M:%S")
-    elif isinstance(value, timedelta):
-        return str(value)
-    elif hasattr(value, "text"):
-        return str(value.text)
-    return value
+def mask_account_card(info_str: str) -> str:
+    """Маскирует номер карты или счёта в зависимости от типа."""
+    if not isinstance(info_str, str) or not info_str.strip():
+        return "None"
 
+    # Находим первую цифру (начало номера)
+    first_digit_idx = None
+    for i, char in enumerate(info_str):
+        if char.isdigit():
+            first_digit_idx = i
+            break
 
-def load_xlsx_transactions(filepath: str) -> List[Dict[str, Any]]:
-    wb = load_workbook(filepath)
-    sheet = wb.active
+    if first_digit_idx is None:
+        return "None"  # Нет цифр в строке
 
-    if sheet is None:
-        raise ValueError("Активный лист не найден")
-    if not isinstance(sheet, Worksheet):
-        raise TypeError(f"Лист имеет тип {type(sheet)}, а не Worksheet")
+    # Выделяем тип (всё до первой цифры) и номер (от первой цифры до конца)
+    type_part = info_str[:first_digit_idx].strip()
+    number_part = info_str[first_digit_idx:]
 
-    headers = [str(cell.value) if cell.value is not None else "" for cell in sheet[1]]
+    # Очищаем номер от всех нецифровых символов
+    cleaned_number = "".join(filter(str.isdigit, number_part))
 
-    transactions: List[Dict[str, Any]] = []
+    if len(cleaned_number) == 0:
+        return "None"
 
-    for row in sheet.iter_rows(min_row=2):
-        transaction: Dict[str, Any] = {}
-        for idx, cell in enumerate(row):
-            if idx < len(headers):
-                key = headers[idx]
-                raw_value = cell.value
-                normalized_value = _normalize_cell_value(raw_value)
-                transaction[key] = normalized_value
-        transactions.append(transaction)
+    # Нормализуем тип (нижний регистр, без лишних пробелов)
+    normalized_type = type_part.lower().strip()  # ← Здесь было: normalizedtype (без _)
 
-    return transactions
-
-
-def filter_by_status(
-    transactions: List[Dict[str, Any]], status: str
-) -> List[Dict[str, Any]]:
-    """Фильтрация транзакций по статусу (с приведением к верхнему регистру)."""
-    return [t for t in transactions if t.get("state", "").upper() == status.upper()]
-
-
-def sort_transactions(
-    transactions: List[Dict[str, Any]], ascending: bool = True
-) -> List[Dict[str, Any]]:
-    """Сортировка транзакций по дате."""
-    return sorted(
-        transactions,
-        key=lambda x: datetime.strptime(x["date"], "%d.%m.%Y"),
-        reverse=not ascending,
-    )
-
-
-def filter_ruble_transactions(
-    transactions: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Фильтрация транзакций только в рублях."""
-    ruble_variants = ["руб", "rub", "rur"]  # Поддерживаем разные написания
-    return [
-        t
-        for t in transactions
-        if (
-            t.get("operationAmount", {}).get("currency", {}).get("name", "").lower()
-            in ruble_variants
-        )
-    ]
-
-
-def search_by_keyword(
-    transactions: List[Dict[str, Any]], keyword: str
-) -> List[Dict[str, Any]]:
-    """Поиск транзакций по ключевому слову в описании."""
-    return [
-        t
-        for t in transactions
-        if keyword.lower() in str(t.get("description", "")).lower()
-    ]
-
-
-def print_transactions(transactions: List[Dict[str, Any]]) -> None:
-    """Вывод транзакций в консоль."""
-    if not transactions:
-        print("Не найдено ни одной транзакции, подходящей под ваши условия фильтрации")
-        return
-
-    print(f"\nВсего банковских операций в выборке: {len(transactions)}\n")
-    for t in transactions:
-        date = t.get("date", "")
-        description = t.get("description", "")
-        from_acc = t.get("from", "")
-        to_acc = t.get("to", "")
-
-        # Получаем сумму и валюту
-        op_amount = t.get("operationAmount", {})
-        amount = op_amount.get("amount", "")
-        currency = op_amount.get("currency", {}).get("name", "")
-
-        print(f"{date} {description}")
-
-        if from_acc:
-            print(f"{from_acc} -> {to_acc}")
+    # Проверяем тип и длину
+    if normalized_type in ("visa", "mastercard"):  # ← Исправлено: normalized_type (с _)
+        if len(cleaned_number) == 16:
+            return f"{cleaned_number[:4]} {cleaned_number[4:6]}** **** {cleaned_number[-4:]}"
         else:
-            # Маскируем последние 4 цифры счёта ВСЕГДА (даже если короткий)
-            to_str = str(to_acc) if to_acc else ""
-            if len(to_str) >= 4:
-                print(f"Счет **{to_str[-4:]}")
-            else:
-                # Если меньше 4 цифр — выводим как есть, но с префиксом "Счет **"
-                print(f"Счет **{to_str}")
+            return "None"
+    elif normalized_type == "счет":  # ← Исправлено: normalized_type (с _)
+        if len(cleaned_number) >= 4:
+            return f"**{cleaned_number[-4:]}"
+        else:
+            return "None"
+    else:
+        return "None"  # Неизвестный тип
 
-        print(f"Сумма: {amount} {currency}\n")
+
+def get_date(date_str: str) -> str:
+    """Преобразует ISO-дату в формат ДД.ММ.ГГГГ."""
+    dt_obj = datetime.fromisoformat(date_str)
+    return dt_obj.strftime("%d.%m.%Y")
 
 
 def main() -> None:
-    print("Привет! Добро пожаловать в программу работы с банковскими транзакциями.")
-    print("Выберите необходимый пункт меню:")
-    print("1. Получить информацию о транзакциях из JSON-файла")
-    print("2. Получить информацию о транзакциях из CSV-файла")
-    print("3. Получить информацию о транзакциях из XLSX-файла")
+    """Основная функция программы."""
+    try:
+        print(
+            "\nПрограмма: Привет! Добро пожаловать в программу работы с банковскими транзакциями."
+        )
+        print("Выберите необходимый пункт меню:")
+        print("1. Получить информацию о транзакциях из JSON-файла")
+        print("2. Получить информацию о транзакциях из CSV-файла")
+        print("3. Получить информацию о транзакциях из XLSX-файла")
 
-    choice = input("> ")
+        choice = input("\nПользователь: ").strip()
 
-    if choice == "1":
-        print("Для обработки выбран JSON-файл.")
-        file_path = input("Введите путь к JSON-файлу: ")
-        transactions = load_json_transactions(file_path)
-    elif choice == "2":
-        print("Для обработки выбран CSV-файл.")
-        file_path = input("Введите путь к CSV-файлу: ")
-        transactions = load_csv_transactions(file_path)
-    elif choice == "3":
-        print("Для обработки выбран XLSX-файл.")
-        file_path = input("Введите путь к XLSX-файлу: ")
-        transactions = load_xlsx_transactions(file_path)
-    else:
-        print("Неверный выбор. Завершение программы.")
-        return
+        transactions: List[Dict[str, Any]] = []
 
-    valid_statuses = ["EXECUTED", "CANCELED", "PENDING"]
-    status = ""
-    while True:
-        print("Введите статус, по которому необходимо выполнить фильтрацию.")
-        print(f"Доступные для фильтровки статусы: {', '.join(valid_statuses)}")
-        status = input("> ").strip()
-        if status.upper() in valid_statuses:
-            break
+        if choice == "1":
+            file_path = input("Введите путь к JSON-файлу: ").strip()
+            if not os.path.exists(file_path):
+                print(f"\nПрограмма: Файл не найден: {file_path}")
+                return
+            transactions = load_transactions(file_path)
+            print("\nПрограмма: Для обработки выбран JSON-файл.")
+
+        elif choice == "2":
+            file_path = input("Введите путь к CSV-файлу: ").strip()
+            if not os.path.exists(file_path):
+                print(f"\nПрограмма: Файл не найден: {file_path}")
+                return
+            transactions = read_csv_file(file_path)
+            print("\nПрограмма: Для обработки выбран CSV-файл.")
+
+        elif choice == "3":
+            file_path = input("Введите путь к XLSX-файлу: ").strip()
+            if not os.path.exists(file_path):
+                print(f"\nПрограмма: Файл не найден: {file_path}")
+                return
+            transactions = read_excel_file(file_path)
+            print("\nПрограмма: Для обработки выбран XLSX-файл.")
+
         else:
-            print(f'Статус операции "{status}" недоступен.')
+            print("\nПрограмма: Неверный выбор формата файла")
+            return
 
-    print(f'Операции отфильтрованы по статусу "{status.upper()}"')
-    filtered_transactions = filter_by_status(transactions, status)
+        if not transactions:
+            print("\nПрограмма: Ошибка загрузки данных или файл пуст")
+            return
 
-    sort_choice = input("Отсортировать операции по дате? Да/Нет\n> ").strip().lower()
-    if sort_choice == "да":
-        order = (
-            input("Отсортировать по возрастанию или по убыванию?\n> ").strip().lower()
+        valid_states = {"EXECUTED", "CANCELED", "PENDING"}
+        state = ""
+        while state not in valid_states:
+            state = (
+                input(
+                    "\nПрограмма: Введите статус, по которому необходимо выполнить фильтрацию.\n"
+                    "Доступные для фильтровки статусы: EXECUTED, CANCELED, PENDING\n"
+                    "Пользователь: "
+                )
+                .strip()
+                .upper()
+            )
+
+            if state not in valid_states:
+                print(f"\nПрограмма: Статус операции {state} недоступен.")
+
+        filtered_transactions = filter_by_state(transactions, state)
+        print(f'\nПрограмма: Операции отфильтрованы по статусу "{state}"')
+
+        sort_choice = (
+            input(
+                "\nПрограмма: Отсортировать операции по дате? Да/Нет\n" "Пользователь: "
+            )
+            .strip()
+            .lower()
         )
-        ascending = order == "по возрастанию"
-        filtered_transactions = sort_transactions(filtered_transactions, ascending)
 
-    ruble_choice = (
-        input("Выводить только рублёвые транзакции? Да/Нет\n> ").strip().lower()
-    )
-    if ruble_choice == "да":
-        filtered_transactions = filter_ruble_transactions(filtered_transactions)
+        if sort_choice in ("да", "yes"):
+            reverse_choice = (
+                input(
+                    "\nПрограмма: Отсортировать по возрастанию или по убыванию?\n"
+                    "Пользователь: "
+                )
+                .strip()
+                .lower()
+            )
+            reverse = reverse_choice == "по убыванию"
+            filtered_transactions = sort_by_date(filtered_transactions, reverse=reverse)
 
-    keyword_choice = (
-        input(
-            "Отфильтровать список транзакций по определённому слову в описании? Да/Нет\n> "
+        rub_choice = (
+            input(
+                "\nПрограмма: Выводить только рублевые транзакции? Да/Нет\n"
+                "Пользователь: "
+            )
+            .strip()
+            .lower()
         )
-        .strip()
-        .lower()
-    )
-    if keyword_choice == "да":
-        keyword = input("Введите ключевое слово: ").strip()
-        filtered_transactions = search_by_keyword(filtered_transactions, keyword)
 
-    print("Распечатываю итоговый список транзакций...")
-    print_transactions(filtered_transactions)
+        if rub_choice in ("да", "yes"):
+            filtered_transactions = [
+                tx
+                for tx in filtered_transactions
+                if tx.get("operationAmount", {}).get("currency", {}).get("code")
+                == "RUB"
+            ]
 
+        search_choice = (
+            input(
+                "\nПрограмма: Отфильтровать список транзакций по определенному слову в описании? Да/Нет\n"
+                "Пользователь: "
+            )
+            .strip()
+            .lower()
+        )
 
-if __name__ == "__main__":
-    main()
+        if search_choice in ("да", "yes"):
+            query = input("Введите слово для поиска: ").strip()
+            filtered_transactions = process_bank_search(filtered_transactions, query)
+
+        print("\nПрограмма: Распечатываю итоговый список транзакций...")
+
+        if not filtered_transactions:
+            print(
+                "\nПрограмма: Не найдено ни одной транзакции, подходящей под ваши условия фильтрации."
+            )
+            return
+
+        print(
+            f"\nПрограмма: Всего банковских операций в выборке: {len(filtered_transactions)}"
+        )
+
+        for tx in filtered_transactions:
+            try:
+                date_str = tx.get("date", "")
+                if not date_str:
+                    print("\nОшибка: поле 'date' отсутствует в транзакции")
+                    continue
+                date = get_date(date_str)
+
+                description = tx.get("description", "Не указано")
+                from_info = mask_account_card(tx.get("from", ""))
+                to_info = mask_account_card(tx.get("to", ""))
+
+                amount = process_transaction(tx)
+                currency_code = tx["operationAmount"]["currency"]["code"]
+                currency_name = tx["operationAmount"]["currency"].get(
+                    "name", currency_code
+                )
+
+                print(f"\n{date} {description}")
+                if from_info != "None" and to_info != "None":
+                    print(f"{from_info} -> {to_info}")
+                elif from_info != "None":
+                    print(f"Счёт: {from_info}")
+                elif to_info != "None":
+                    print(f"Счёт: {to_info}")
+
+                print(f"Сумма: {round(amount, 2)} {currency_name}")
+
+            except KeyError as e:
+                print(f"\nОшибка: отсутствует поле {e} в транзакции")
+            except Exception as e:
+                print(f"\nОшибка при обработке транзакции: {str(e)}")
+
+    except KeyboardInterrupt:
+        print("\nПрограмма: Работа прервана пользователем.")
+    except Exception as e:
+        print(f"\nПрограмма: Произошла ошибка: {str(e)}")
+    finally:
+        print("\nПрограмма: Работа завершена.")
+
