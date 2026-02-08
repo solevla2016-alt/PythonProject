@@ -1,4 +1,3 @@
-
 import re
 from collections import Counter
 from typing import Any, Dict, List
@@ -13,6 +12,7 @@ def process_bank_search(
     pattern = re.escape(query)
     compiled = re.compile(pattern, re.IGNORECASE)
     return [t for t in transactions if compiled.search(t.get("description", ""))]
+
 
 def process_bank_operations(
     transactions: List[Dict[str, Any]], categories: List[str]

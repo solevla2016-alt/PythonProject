@@ -1799,81 +1799,216 @@ class TestMaskAccountCard(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 
-import os
 from datetime import datetime
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from src.external_api import \
-    process_transaction  # process_transaction лежит здесь!
-from src.financial_operations_reader import read_csv_file, read_excel_file
-from src.process_bank import process_bank_search
+import pandas as pd
+
+from src.financial_operations_reader import read_csv_file
 from src.processing import filter_by_state, sort_by_date
 from src.utils import load_transactions
 
 
-def get_mask_card_number(card_number: str) -> str:
-    if len(card_number) != 16 or not card_number.isdigit():
-        return ""
-    return f"{card_number[:4]} {card_number[4:6]}** **** {card_number[-4:]}"
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    s = str(value).strip()
+    if not s:
+        return None
+    s = s.replace(" ", "").replace(",", ".")
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
 
 
-def get_mask_account(account_number: str) -> str:
-    if len(account_number) < 4 or not account_number.isdigit():
+def format_amount(value: float) -> str:
+    if value is None:
         return ""
-    return f"**{account_number[-4:]}"
+    if float(value).is_integer():
+        return str(int(value))
+    s = f"{value:.2f}"
+    s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def currency_label(code: str, name: str) -> str:
+    c = (code or "").strip().upper()
+    n = (name or "").strip()
+
+    if c == "RUB":
+        return "руб."
+    if c:
+        return c
+    if n:
+        return n
+    return "N/A"
 
 
 def mask_account_card(info_str: str) -> str:
-    """Маскирует номер карты или счёта в зависимости от типа."""
     if not isinstance(info_str, str) or not info_str.strip():
         return "None"
 
-    # Находим первую цифру (начало номера)
+    s = info_str.strip()
     first_digit_idx = None
-    for i, char in enumerate(info_str):
-        if char.isdigit():
+    for i, ch in enumerate(s):
+        if ch.isdigit():
             first_digit_idx = i
             break
-
     if first_digit_idx is None:
-        return "None"  # Нет цифр в строке
-
-    # Выделяем тип (всё до первой цифры) и номер (от первой цифры до конца)
-    type_part = info_str[:first_digit_idx].strip()
-    number_part = info_str[first_digit_idx:]
-
-    # Очищаем номер от всех нецифровых символов
-    cleaned_number = "".join(filter(str.isdigit, number_part))
-
-    if len(cleaned_number) == 0:
         return "None"
 
-    # Нормализуем тип (нижний регистр, без лишних пробелов)
-    normalized_type = type_part.lower().strip()  # ← Здесь было: normalizedtype (без _)
+    type_part_raw = s[:first_digit_idx].strip()
+    number_part = s[first_digit_idx:]
+    cleaned_number = "".join(filter(str.isdigit, number_part))
 
-    # Проверяем тип и длину
-    if normalized_type in ("visa", "mastercard"):  # ← Исправлено: normalized_type (с _)
-        if len(cleaned_number) == 16:
-            return f"{cleaned_number[:4]} {cleaned_number[4:6]}** **** {cleaned_number[-4:]}"
-        else:
+    if not cleaned_number:
+        return "None"
+
+    type_part_norm = type_part_raw.lower().strip().replace("ё", "е")
+    is_account = (
+        ("счет" in type_part_norm)
+        or ("счёт" in type_part_norm)
+        or (len(cleaned_number) == 20)
+    )
+
+    if is_account:
+        if len(cleaned_number) < 4:
             return "None"
-    elif normalized_type == "счет":  # ← Исправлено: normalized_type (с _)
-        if len(cleaned_number) >= 4:
-            return f"**{cleaned_number[-4:]}"
-        else:
-            return "None"
-    else:
-        return "None"  # Неизвестный тип
+        return "Счет **" + cleaned_number[-4:]
+
+    if len(cleaned_number) == 16:
+        masked = (
+            f"{cleaned_number[:4]} {cleaned_number[4:6]}** **** {cleaned_number[-4:]}"
+        )
+        if type_part_raw:
+            return f"{type_part_raw} {masked}"
+        return masked
+
+    if len(cleaned_number) >= 4:
+        return "Счет **" + cleaned_number[-4:]
+
+    return "None"
 
 
 def get_date(date_str: str) -> str:
-    """Преобразует ISO-дату в формат ДД.ММ.ГГГГ."""
-    dt_obj = datetime.fromisoformat(date_str)
-    return dt_obj.strftime("%d.%m.%Y")
+    if not isinstance(date_str, str) or not date_str.strip():
+        return ""
+
+    s = date_str.strip()
+    try:
+        dt_obj = datetime.fromisoformat(s)
+        return dt_obj.strftime("%d.%m.%Y")
+    except Exception:
+        pass
+
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y.%m.%d"):
+        try:
+            dt_obj = datetime.strptime(s, fmt)
+            return dt_obj.strftime("%d.%m.%Y")
+        except Exception:
+            continue
+
+    return s
+
+
+def read_excel_file(file_path: Path) -> List[Dict[str, Any]]:
+    df = pd.read_excel(file_path)
+    records = df.to_dict(orient="records")
+    return [{str(k): v for k, v in record.items()} for record in records]
+
+
+def normalize_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(tx, dict) or not tx:
+        return {}
+
+    op = tx.get("operationAmount")
+    if isinstance(op, dict):
+        amt = _to_float(op.get("amount"))
+        if amt is not None:
+            op["amount"] = amt
+            tx["operationAmount"] = op
+        return tx
+
+    if op is not None and op != "":
+        amt = _to_float(op)
+        tx["operationAmount"] = amt if amt is not None else None
+        return tx
+
+    if "operationAmount" not in tx and "amount" in tx:
+        amt = _to_float(tx.get("amount"))
+        if amt is None:
+            tx["operationAmount"] = None
+            return tx
+
+        code = str(tx.get("currency_code", "")).strip()
+        name = str(tx.get("currency_name", "")).strip()
+        tx["operationAmount"] = {
+            "amount": amt,
+            "currency": {"name": name, "code": code},
+        }
+        return tx
+
+    return tx
+
+
+def normalize_transactions(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for tx in transactions:
+        ntx = normalize_transaction(tx)
+        if ntx:
+            result.append(ntx)
+    return result
+
+
+def process_transaction_safe(tx: Dict[str, Any]) -> Optional[float]:
+    op = tx.get("operationAmount")
+
+    if isinstance(op, dict):
+        return _to_float(op.get("amount"))
+    return _to_float(op)
+
+
+def filter_by_description_keyword(
+    transactions: List[Dict[str, Any]], keyword: str
+) -> List[Dict[str, Any]]:
+    kw = (keyword or "").strip().lower()
+    if not kw:
+        return transactions
+
+    result: List[Dict[str, Any]] = []
+    for tx in transactions:
+        desc = str(tx.get("description", "")).lower()
+        if kw in desc:
+            result.append(tx)
+    return result
+
+
+def ask_sort_reverse() -> bool:
+    while True:
+        choice = (
+            input(
+                "\nПрограмма: Выберите порядок сортировки:\n"
+                "1 - по возрастанию (сначала старые)\n"
+                "2 - по убыванию (сначала новые)\n"
+                "Пользователь: "
+            )
+            .strip()
+            .lower()
+        )
+
+        if choice in ("1", "по возрастанию", "возрастанию", "asc", "a"):
+            return False
+        if choice in ("2", "по убыванию", "убыванию", "desc", "d"):
+            return True
+        print("\nПрограмма: Некорректный выбор. Введите 1 или 2.")
 
 
 def main() -> None:
-    """Основная функция программы."""
     try:
         print(
             "\nПрограмма: Привет! Добро пожаловать в программу работы с банковскими транзакциями."
@@ -1884,33 +2019,37 @@ def main() -> None:
         print("3. Получить информацию о транзакциях из XLSX-файла")
 
         choice = input("\nПользователь: ").strip()
-
         transactions: List[Dict[str, Any]] = []
 
         if choice == "1":
-            file_path = input("Введите путь к JSON-файлу: ").strip()
-            if not os.path.exists(file_path):
+            file_path = Path(
+                r"C:\Users\Пользователь\PycharmProjects\PythonProject\data\operations.json"
+            )
+            if not file_path.exists():
                 print(f"\nПрограмма: Файл не найден: {file_path}")
                 return
-            transactions = load_transactions(file_path)
+            transactions = load_transactions(str(file_path))
             print("\nПрограмма: Для обработки выбран JSON-файл.")
 
         elif choice == "2":
-            file_path = input("Введите путь к CSV-файлу: ").strip()
-            if not os.path.exists(file_path):
+            file_path = Path(
+                r"C:\Users\Пользователь\PycharmProjects\PythonProject\data\transactions.csv"
+            )
+            if not file_path.exists():
                 print(f"\nПрограмма: Файл не найден: {file_path}")
                 return
-            transactions = read_csv_file(file_path)
+            transactions = read_csv_file(str(file_path))
             print("\nПрограмма: Для обработки выбран CSV-файл.")
 
         elif choice == "3":
-            file_path = input("Введите путь к XLSX-файлу: ").strip()
-            if not os.path.exists(file_path):
+            file_path = Path(
+                r"C:\Users\Пользователь\PycharmProjects\PythonProject\data\transactions_excel.xlsx"
+            )
+            if not file_path.exists():
                 print(f"\nПрограмма: Файл не найден: {file_path}")
                 return
             transactions = read_excel_file(file_path)
             print("\nПрограмма: Для обработки выбран XLSX-файл.")
-
         else:
             print("\nПрограмма: Неверный выбор формата файла")
             return
@@ -1918,6 +2057,8 @@ def main() -> None:
         if not transactions:
             print("\nПрограмма: Ошибка загрузки данных или файл пуст")
             return
+
+        transactions = normalize_transactions(transactions)
 
         valid_states = {"EXECUTED", "CANCELED", "PENDING"}
         state = ""
@@ -1931,7 +2072,6 @@ def main() -> None:
                 .strip()
                 .upper()
             )
-
             if state not in valid_states:
                 print(f"\nПрограмма: Статус операции {state} недоступен.")
 
@@ -1939,40 +2079,35 @@ def main() -> None:
         print(f'\nПрограмма: Операции отфильтрованы по статусу "{state}"')
 
         sort_choice = (
-            input(
-                "\nПрограмма: Отсортировать операции по дате? Да/Нет\n" "Пользователь: "
-            )
+            input("\nПрограмма: Отсортировать операции по дате? Да/Нет\nПользователь: ")
             .strip()
             .lower()
         )
-
         if sort_choice in ("да", "yes"):
-            reverse_choice = (
-                input(
-                    "\nПрограмма: Отсортировать по возрастанию или по убыванию?\n"
-                    "Пользователь: "
-                )
-                .strip()
-                .lower()
-            )
-            reverse = reverse_choice == "по убыванию"
+            reverse = ask_sort_reverse()
             filtered_transactions = sort_by_date(filtered_transactions, reverse=reverse)
 
         rub_choice = (
             input(
-                "\nПрограмма: Выводить только рублевые транзакции? Да/Нет\n"
-                "Пользователь: "
+                "\nПрограмма: Выводить только рублевые транзакции? Да/Нет\nПользователь: "
             )
             .strip()
             .lower()
         )
-
         if rub_choice in ("да", "yes"):
             filtered_transactions = [
                 tx
                 for tx in filtered_transactions
-                if tx.get("operationAmount", {}).get("currency", {}).get("code")
-                == "RUB"
+                if (
+                    isinstance(tx.get("operationAmount"), dict)
+                    and str(
+                        tx.get("operationAmount", {})
+                        .get("currency", {})
+                        .get("code", "")
+                    ).upper()
+                    == "RUB"
+                )
+                or (isinstance(tx.get("operationAmount"), (int, float)))
             ]
 
         search_choice = (
@@ -1983,13 +2118,15 @@ def main() -> None:
             .strip()
             .lower()
         )
-
         if search_choice in ("да", "yes"):
-            query = input("Введите слово для поиска: ").strip()
-            filtered_transactions = process_bank_search(filtered_transactions, query)
+            keyword = input(
+                "\nПрограмма: Введите слово для поиска в описании\nПользователь: "
+            ).strip()
+            filtered_transactions = filter_by_description_keyword(
+                filtered_transactions, keyword
+            )
 
         print("\nПрограмма: Распечатываю итоговый список транзакций...")
-
         if not filtered_transactions:
             print(
                 "\nПрограмма: Не найдено ни одной транзакции, подходящей под ваши условия фильтрации."
@@ -1999,37 +2136,40 @@ def main() -> None:
         print(
             f"\nПрограмма: Всего банковских операций в выборке: {len(filtered_transactions)}"
         )
-
         for tx in filtered_transactions:
             try:
                 date_str = tx.get("date", "")
                 if not date_str:
-                    print("\nОшибка: поле 'date' отсутствует в транзакции")
                     continue
                 date = get_date(date_str)
-
                 description = tx.get("description", "Не указано")
-                from_info = mask_account_card(tx.get("from", ""))
-                to_info = mask_account_card(tx.get("to", ""))
-
-                amount = process_transaction(tx)
-                currency_code = tx["operationAmount"]["currency"]["code"]
-                currency_name = tx["operationAmount"]["currency"].get(
-                    "name", currency_code
-                )
+                from_masked = mask_account_card(tx.get("from", ""))
+                to_masked = mask_account_card(tx.get("to", ""))
+                op = tx.get("operationAmount")
+                amount = process_transaction_safe(tx)
 
                 print(f"\n{date} {description}")
-                if from_info != "None" and to_info != "None":
-                    print(f"{from_info} -> {to_info}")
-                elif from_info != "None":
-                    print(f"Счёт: {from_info}")
-                elif to_info != "None":
-                    print(f"Счёт: {to_info}")
+                if from_masked != "None" and to_masked != "None":
+                    print(f"{from_masked} -> {to_masked}")
+                elif from_masked != "None":
+                    print(from_masked)
+                elif to_masked != "None":
+                    print(to_masked)
 
-                print(f"Сумма: {round(amount, 2)} {currency_name}")
+                if op is None or op == "" or amount is None:
+                    print("Сумма: данные отсутствуют")
+                    continue
 
-            except KeyError as e:
-                print(f"\nОшибка: отсутствует поле {e} в транзакции")
+                if isinstance(op, dict):
+                    cur = op.get("currency") or {}
+                    code = str(cur.get("code", "")).strip()
+                    name = str(cur.get("name", "")).strip()
+                    cur_text = currency_label(code, name)
+                else:
+                    cur_text = "руб."
+
+                print(f"Сумма: {format_amount(amount)} {cur_text}")
+
             except Exception as e:
                 print(f"\nОшибка при обработке транзакции: {str(e)}")
 
@@ -2040,202 +2180,325 @@ def main() -> None:
     finally:
         print("\nПрограмма: Работа завершена.")
 
+
+if __name__ == "__main__":
+    main()
+
+from io import StringIO
+from unittest.mock import patch
+
+from src import main as m
+
 import unittest
 import json
 import os
+from pathlib import Path
 from tempfile import NamedTemporaryFile
-from unittest.mock import patch, Mock
-from src.main import *
-from datetime import datetime
-from io import StringIO
-from contextlib import redirect_stdout
-import sys
+
+from src.utils import load_transactions
+from src.financial_operations_reader import read_csv_file
+from src.processing import sort_by_date, filter_by_state
 
 
-class TestMainFunctions(unittest.TestCase):
 
-    def setUp(self):
-        self.maxDiff = None
+class TestMoreHelpers(unittest.TestCase):
+    def test__to_float_none(self):
+        self.assertIsNone(m._to_float(None))
 
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_get_mask_card_number_valid(self, mock_stdout):
-        result = get_mask_card_number("1234567890123456")
-        expected_result = "1234 56** **** 3456"
-        self.assertEqual(result, expected_result)
+    def test__to_float_empty_string(self):
+        self.assertIsNone(m._to_float("   "))
 
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_get_mask_card_number_invalid_length(self, mock_stdout):
-        result = get_mask_card_number("123456789012345")
-        expected_result = ""
-        self.assertEqual(result, expected_result)
+    def test__to_float_comma_and_spaces(self):
+        self.assertEqual(m._to_float("1 234,50"), 1234.5)
 
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_get_mask_account_valid(self, mock_stdout):
-        result = get_mask_account("1234567890123456")
-        expected_result = "**3456"
-        self.assertEqual(result, expected_result)
+    def test__to_float_invalid(self):
+        self.assertIsNone(m._to_float("abc"))
+
+    def test_get_date_simple_yyyy_mm_dd(self):
+        self.assertEqual(m.get_date("2023-10-05"), "05.10.2023")
+
+    def test_get_date_unknown_format_returns_original(self):
+        self.assertEqual(m.get_date("05/10/2023"), "05/10/2023")
+
+    def test_mask_account_card_schet_with_yo(self):
+        self.assertEqual(m.mask_account_card("Счёт 1234567890"), "Счет **7890")
+
+    def test_mask_account_card_20_digits_without_word(self):
+        self.assertEqual(
+            m.mask_account_card("12345678901234567890"),
+            "Счет **7890"
+        )
+
+    def test_mask_account_card_too_short_digits(self):
+        self.assertEqual(m.mask_account_card("Счет 123"), "None")
 
 
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_mask_account_card_visa(self, mock_stdout):
-        result = mask_account_card("Visa 1234567890123456")
-        expected_result = "1234 56** **** 3456"
-        self.assertEqual(result, expected_result)
 
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_mask_account_card_mastercard(self, mock_stdout):
-        result = mask_account_card("MasterCard 1234567890123456")
-        expected_result = "1234 56** **** 3456"
-        self.assertEqual(result, expected_result)
-
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_mask_account_card_account(self, mock_stdout):
-        result = mask_account_card("Счет 1234567890123456")
-        expected_result = "**3456"
-        self.assertEqual(result, expected_result)
-
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_get_date_iso_format(self, mock_stdout):
-        iso_date = "2023-10-05T14:30:00Z"
-        result = get_date(iso_date)
-        expected_result = "05.10.2023"
-        self.assertEqual(result, expected_result)
-
-    def setUp(self):
-        self.maxDiff = None
-
-    @patch('builtins.input')
-    @patch('src.utils.load_transactions')
-    @patch('src.processing.filter_by_state')
-    @patch('src.processing.sort_by_date')
-    @patch('src.external_api.process_transaction')
-    def test_main_functionality_json_with_temporary_file(
-        self,
-        mock_process_transaction,
-        mock_sort_by_date,
-        mock_filter_by_state,
-        mock_load_transactions,
-        mock_input
-    ):
-        # Создание временной копии файла
-        temp_file = NamedTemporaryFile(mode="w+", delete=False)
-        transaction_data = [{
-            "id": 1,
-            "date": "2023-10-05T14:30:00Z",
-            "description": "Перевод средств",
-            "from": "Visa 1234567890123456",
-            "to": "Счет 1234567890123456",
+class TestNormalizeTransaction(unittest.TestCase):
+    def test_normalize_transaction_operationAmount_dict_amount_str_to_float(self):
+        tx = {
             "operationAmount": {
-                "amount": "1000",
-                "currency": {
-                    "code": "RUB",
-                    "name": "Российский рубль"
-                }
+                "amount": "1000.50",
+                "currency": {"code": "USD", "name": "USD"}
+            }
+        }
+        out = m.normalize_transaction(tx)
+        self.assertIsInstance(out["operationAmount"]["amount"], float)
+        self.assertEqual(out["operationAmount"]["amount"], 1000.5)
+
+    def test_normalize_transaction_operationAmount_str_to_float(self):
+        tx = {"operationAmount": "2000"}
+        out = m.normalize_transaction(tx)
+        self.assertEqual(out["operationAmount"], 2000.0)
+
+    def test_normalize_transaction_csv_shape_builds_operationAmount(self):
+        tx = {
+            "amount": "130",
+            "currency_code": "USD",
+            "currency_name": "USD",
+            "description": "Перевод"
+        }
+        out = m.normalize_transaction(tx)
+        self.assertIsInstance(out["operationAmount"], dict)
+        self.assertEqual(out["operationAmount"]["amount"], 130.0)
+        self.assertEqual(out["operationAmount"]["currency"]["code"], "USD")
+        self.assertEqual(out["operationAmount"]["currency"]["name"], "USD")
+
+    def test_normalize_transactions_drops_empty_dicts(self):
+        txs = [
+            {},
+            {"amount": "10", "currency_code": "RUB", "currency_name": "руб."}
+        ]
+        out = m.normalize_transactions(txs)
+        self.assertEqual(len(out), 1)
+
+
+
+class TestSearchAndSortHelpers(unittest.TestCase):
+    def test_filter_by_description_keyword_empty_keyword_returns_same(self):
+        txs = [{"description": "Перевод"}, {"description": "Открытие вклада"}]
+        out = m.filter_by_description_keyword(txs, "")
+        self.assertEqual(out, txs)
+
+    def test_filter_by_description_keyword_finds_case_insensitive(self):
+        txs = [
+            {"description": "Перевод организации"},
+            {"description": "Открытие вклада"}
+        ]
+        out = m.filter_by_description_keyword(txs, "ОРГАНИЗАЦИИ")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["description"], "Перевод организации")
+
+    @patch("builtins.input", side_effect=["что-то", "1"])
+    def test_ask_sort_reverse_loops_until_valid(self, mock_input):
+        rev = m.ask_sort_reverse()
+        self.assertFalse(rev)
+
+    @patch("builtins.input", side_effect=["x", "2"])
+    def test_ask_sort_reverse_choose_desc(self, mock_input):
+        rev = m.ask_sort_reverse()
+        self.assertTrue(rev)
+
+
+
+class TestMainMoreBranches(unittest.TestCase):
+    @patch("pathlib.Path.exists", return_value=True)
+    @patch("src.main.sort_by_date")
+    @patch("src.main.filter_by_state")
+    @patch("src.main.load_transactions")
+    @patch("builtins.input")
+    def test_main_rub_filter_keeps_only_rub(
+        self,
+        mock_input,
+        mock_load_transactions,
+        mock_filter_by_state,
+        mock_sort_by_date,
+        mock_exists,
+    ):
+        txs = [
+            {
+                "id": 1,
+                "date": "2019-12-08T22:46:21.935582",
+                "description": "Открытие вклада",
+                "to": "Счет 12345678901234564321",
+                "operationAmount": {
+                    "amount": "40542",
+                    "currency": {"code": "RUB", "name": "руб."}
+                },
+                "state": "EXECUTED",
             },
-            "state": "EXECUTED"
-        }]
-        json.dump(transaction_data, temp_file)
-        temp_file.close()
-
-        mock_input.side_effect = ["1", temp_file.name, "EXECUTED", "Да", "По убыванию", "Да", "нет"]
-        mock_load_transactions.return_value = transaction_data
-        mock_filter_by_state.return_value = mock_load_transactions.return_value
-        mock_sort_by_date.return_value = mock_load_transactions.return_value
-        mock_process_transaction.return_value = float(mock_load_transactions.return_value[0]["operationAmount"]["amount"])
-
-        with patch('sys.stdout', new=StringIO()) as fake_out:
-            main()
-            output = fake_out.getvalue()
-
-        # Ключевые элементы для проверки
-        key_elements = [
-            "Программа: Привет!",
-            "Получить информацию о транзакциях из JSON-файла",
-            "Операции отфильтрованы по статусу \"EXECUTED\"",
-            "Распечатываю итоговый список транзакций...",
-            "Всего банковских операций в выборке: 1",
-            "05.10.2023 Перевод средств",
-            "1234 56** **** 3456 -> **3456",
-            "Сумма: 1000.0 Российский рубль",
-            "Работа завершена.",
+            {
+                "id": 2,
+                "date": "2019-12-07T22:46:21.935582",
+                "description": "Открытие вклада",
+                "to": "Счет 12345678901234560034",
+                "operationAmount": {
+                    "amount": "10",
+                    "currency": {"code": "USD", "name": "USD"}
+                },
+                "state": "EXECUTED",
+            },
         ]
 
-        # Проверяем наличие ключевых элементов в выводе
-        for element in key_elements:
-            self.assertIn(element, output)
+        mock_load_transactions.return_value = txs
+        mock_filter_by_state.return_value = txs
+        mock_sort_by_date.return_value = txs
+        mock_input.side_effect = [
+            "1",          # JSON
+            "EXECUTED",   # статус
+            "нет",        # сортировать
+            "да",         # только рублёвые
+            "нет",        # фильтр по слову
+        ]
+        with patch("sys.stdout", new_callable=StringIO) as fake_out:
+            m.main()
+            output = fake_out.getvalue()
+        self.assertIn("Всего банковских операций в выборке: 1", output)
+        self.assertIn("Сумма: 40542 руб.", output)
+        self.assertNotIn("USD", output)
 
-        # Удаляем временный файл
-        os.unlink(temp_file.name)
-
-
-class TestMainErrorsHandling(unittest.TestCase):
-
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_invalid_file_path_no_exit(self, mock_stdout):
-        with patch('builtins.input') as mock_input:
-            mock_input.side_effect = ['1', '/nonexistent/path/to/file.json']
-
-            main()  # Просто выполняем main(), проверяя вывод без SystemExit
-
-        self.assertIn("Файл не найден:", mock_stdout.getvalue())
-
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_empty_file(self, mock_stdout):
-        temp_file = NamedTemporaryFile(delete=False)
-        temp_file.write(b"[]")
-        temp_file.close()
-
-        with patch('builtins.input') as mock_input:
-            mock_input.side_effect = ['1', temp_file.name]
-
-            main()
-
-        self.assertIn("Ошибка загрузки данных или файл пуст", mock_stdout.getvalue())
-
-    @patch('sys.stdout', new_callable=StringIO)
-    def test_missing_fields_in_data(self, mock_stdout):
-        temp_file = NamedTemporaryFile(delete=False)
-        invalid_data = [{
-            "id": 1,
-            "description": "Тестовая операция",
-            "state": "EXECUTED"
-        }]
-        json.dump(invalid_data, open(temp_file.name, 'w'))
-
-        with patch('builtins.input') as mock_input:
-            mock_input.side_effect = ['1', temp_file.name, 'EXECUTED']
-
-            main()
-
-        # Проверяем наличие стандартной ошибки
-        self.assertIn("Произошла ошибка:", mock_stdout.getvalue())
-
-class TestMaskAccountCard(unittest.TestCase):
-    def test_mask_short_card_number(self):
-        result = mask_account_card("Visa 123456789012345")
-        expected_result = "None"
-        self.assertEqual(result, expected_result)
-
-    def test_mask_long_card_number(self):
-        result = mask_account_card("Visa 12345678901234567890")
-        expected_result = "None"
-        self.assertEqual(result, expected_result)
-
-    def test_mask_account_short_number(self):
-        result = mask_account_card("Счет 1234567890123456")
-        expected_result = "**3456"
-        self.assertEqual(result, expected_result)
-
-    def test_mask_account_too_short_number(self):
-        result = mask_account_card("Счет 1234")
-        expected_result = "**1234"
-        self.assertEqual(result, expected_result)
-
-    def test_mask_account_minimal_number(self):
-        result = mask_account_card("Счет 12345678")
-        expected_result = "**5678"
-        self.assertEqual(result, expected_result)
+    @patch("pathlib.Path.exists", return_value=True)
+    @patch("src.main.sort_by_date")
+    @patch("src.main.filter_by_state")
+    @patch("src.main.load_transactions")
+    @patch("builtins.input")
+    def test_main_search_filter_reduces_list(
+        self,
+        mock_input,
+        mock_load_transactions,
+        mock_filter_by_state,
+        mock_sort_by_date,
+        mock_exists,
+    ):
+        txs = [
+            {
+                "id": 1,
+                "date": "2019-11-12T10:00:00",
+                "description": "Перевод с карты на карту",
+                "from": "MasterCard 7771271234",
+                "from": "MasterCard 7771271234563727",
+                "to": "Visa Platinum 1293381234569203",
+                "operationAmount": {
+                    "amount": "130",
+                    "currency": {"code": "USD", "name": "USD"}
+                },
+                "state": "CANCELED",
+            },
+            {
+                "id": 2,
+                "date": "2019-11-12T11:00:00",
+                "description": "Открытие вклада",
+                "to": "Счет 12345678901234564321",
+                "operationAmount": {
+                    "amount": "1",
+                    "currency": {"code": "RUB", "name": "руб."}
+                },
+                "state": "CANCELED",
+            },
+        ]
+        mock_load_transactions.return_value = txs
+        mock_filter_by_state.return_value = txs
+        mock_sort_by_date.return_value = txs
+        mock_input.side_effect = [
+            "1",          # JSON
+            "CANCELED",   # статус
+            "нет",        # сортировать
+            "нет",        # только рублёвые
+            "да",         # фильтр по слову
+            "карты",      # ключевое слово
+        ]
+        with patch("sys.stdout", new_callable=StringIO) as fake_out:
+            m.main()
+            output = fake_out.getvalue()
+        self.assertIn("Всего банковских операций в выборке: 1", output)
+        self.assertIn("Перевод с карты на карту", output)
+        self.assertNotIn("Открытие вклада", output)
 
 
-if __name__ == '__main__':
+
+class TestLoadTransactionsJson(unittest.TestCase):
+    def test_load_json_transactions(self):
+        tmp = NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        try:
+            json.dump([{"id": 1, "amount": 100}], tmp, ensure_ascii=False)
+            tmp.close()
+
+            txs = load_transactions(Path(tmp.name))
+            self.assertEqual(len(txs), 1)
+            self.assertEqual(txs[0]["id"], 1)
+            self.assertEqual(txs[0]["amount"], 100)
+        finally:
+            os.unlink(tmp.name)
+
+    def test_load_nonexistent_file_raises_or_empty(self):
+        p = Path("definitely_not_exists_12345.json")
+        try:
+            txs = load_transactions(p)
+        except FileNotFoundError:
+            return
+        self.assertEqual(txs, [])
+
+
+
+class TestReadCsvFile(unittest.TestCase):
+    def test_read_csv_file_reads_semicolon_csv(self):
+        tmp = NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8")
+        try:
+            tmp.write("id;state;date;amount;currency_name;currency_code;from;to;description\n")
+            tmp.write("1;CANCELED;2019-11-12T10:00:00;130;USD;USD;MasterCard 7771271234563727;Visa Platinum 1293381234569203;Перевод с карты на карту\n")
+            tmp.close()
+
+            txs = read_csv_file(tmp.name)
+            self.assertEqual(len(txs), 1)
+            self.assertEqual(txs[0]["id"], 1)
+            self.assertEqual(txs[0]["currency_code"], "USD")
+            self.assertEqual(txs[0]["amount"], 130)
+        finally:
+            os.unlink(tmp.name)
+
+
+
+class TestSortByDate(unittest.TestCase):
+    def test_sort_by_date_ascending(self):
+        txs = [
+            {"date": "2023-01-01T12:00:00"},
+            {"date": "2022-01-01T12:00:00"},
+            {"date": "2024-01-01T12:00:00"}
+        ]
+        sorted_txs = m.sort_by_date(txs, reverse=False)
+        self.assertEqual(sorted_txs[0]["date"], "2022-01-01T12:00:00")
+        self.assertEqual(sorted_txs[1]["date"], "2023-01-01T12:00:00")
+        self.assertEqual(sorted_txs[2]["date"], "2024-01-01T12:00:00")
+
+    def test_sort_by_date_descending(self):
+        txs = [
+            {"date": "2023-01-01T12:00:00"},
+            {"date": "2022-01-01T12:00:00"},
+            {"date": "2024-01-01T12:00:00"}
+        ]
+        sorted_txs = m.sort_by_date(txs, reverse=True)
+        self.assertEqual(sorted_txs[0]["date"], "2024-01-01T12:00:00")
+        self.assertEqual(sorted_txs[1]["date"], "2023-01-01T12:00:00")
+        self.assertEqual(sorted_txs[2]["date"], "2022-01-01T12:00:00")
+
+
+
+class TestFilterByState(unittest.TestCase):
+    def test_filter_by_state_executed(self):
+        txs = [
+            {"state": "EXECUTED"},
+            {"state": "CANCELED"},
+            {"state": "EXECUTED"}
+        ]
+        filtered = filter_by_state(txs, "EXECUTED")
+        self.assertEqual(len(filtered), 2)
+        self.assertTrue(all(tx["state"] == "EXECUTED" for tx in filtered))
+
+    def test_filter_by_state_unknown_returns_empty_or_original(self):
+        txs = [{"state": "EXECUTED"}, {"state": "CANCELED"}]
+        filtered = filter_by_state(txs, "UNKNOWN_STATE")
+        self.assertTrue(filtered == [] or filtered == txs)
+
+
+if __name__ == "__main__":
     unittest.main()

@@ -3,12 +3,12 @@ import logging
 import os
 from typing import Any, Dict, List
 
-print("=== Скрипт запущен! ===")
+# print("=== Скрипт запущен! ===")
 
 # Отладка: проверим окружение
-print("=== ОТЛАДКА ===")
-print(f"Текущий каталог: {os.getcwd()}")
-print(f"Существует logs/? {os.path.exists('logs')}")
+# print("=== ОТЛАДКА ===")
+# print(f"Текущий каталог: {os.getcwd()}")
+# print(f"Существует logs/? {os.path.exists('logs')}")
 
 # Создаём директорию для логов
 os.makedirs("logs", exist_ok=True)
@@ -36,8 +36,8 @@ stream_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
 
-print(f"Обработчики логгера: {logger.handlers}")
-print(f"Уровень логгера: {logger.level}")
+# print(f"Обработчики логгера: {logger.handlers}")
+# print(f"Уровень логгера: {logger.level}")
 
 
 def load_transactions(file_path: str) -> List[Dict[str, Any]]:
